@@ -102,7 +102,7 @@ echo "────────────────────────�
 # 0 — Source tree (clone or update)
 # ═══════════════════════════════════════════════════════════════════════════
 REPO_URL="https://github.com/NousResearch/hermes-agent.git"
-REPO_TAG="v2026.5.29.2"
+REPO_TAG="v2026.5.16"
 
 if [[ ! -d "$HERMES_SRC" ]]; then
 	echo "[0/5] Cloning Hermes Agent ${REPO_TAG} to ${HERMES_SRC}..."
