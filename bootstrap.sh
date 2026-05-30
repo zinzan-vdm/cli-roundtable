@@ -238,10 +238,10 @@ else
 fi
 
 echo "       Syncing Python deps..."
-"$UV_CMD" sync --directory "$HERMES_SRC" --python "${HERMES_DATA}/.venv/bin/python" --frozen --extra all 2>&1
+UV_PROJECT_ENVIRONMENT="${HERMES_DATA}/.venv" "$UV_CMD" sync --directory "$HERMES_SRC" --frozen --extra all 2>&1
 
 echo "       Installing hermes-agent (editable, no-deps)..."
-"$UV_CMD" pip install --python "${HERMES_DATA}/.venv/bin/python" --no-cache-dir --no-deps -e "$HERMES_SRC" 2>&1
+UV_PROJECT_ENVIRONMENT="${HERMES_DATA}/.venv" "$UV_CMD" pip install --no-cache-dir --no-deps -e "$HERMES_SRC" 2>&1
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4.5 — Launcher shim (sets HERMES_HOME + HOME per agent)
@@ -286,7 +286,7 @@ echo "       Building terminal UI..."
 # ═══════════════════════════════════════════════════════════════════════════
 if [[ -f "${HERMES_SRC}/tools/skills_sync.py" ]]; then
 	echo "       Syncing bundled skills..."
-	VIRTUAL_ENV="${HERMES_DATA}/.venv" "${HERMES_BIN%/*}/python" \
+	UV_PROJECT_ENVIRONMENT="${HERMES_DATA}/.venv" "${HERMES_DATA}/.venv/bin/python" \
 		"${HERMES_SRC}/tools/skills_sync.py" 2>&1
 fi
 
