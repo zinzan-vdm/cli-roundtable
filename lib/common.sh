@@ -37,6 +37,14 @@ agent_hermes_bin() {
 	echo "${data_dir}/.venv/bin/hermes"
 }
 
+# ── agent_uv_bin ──────────────────────────────────────────────────────────
+# Usage: agent_uv_bin <data_dir>
+# Prints the path to the agent's venv uv binary.
+agent_uv_bin() {
+	local data_dir="${1:?agent_uv_bin: data dir required}"
+	echo "${data_dir}/.venv/bin/uv"
+}
+
 # ── agent_systemd_unit ────────────────────────────────────────────────────
 # Usage: agent_systemd_unit <agent_name>
 # Prints the systemd unit name for the agent.

@@ -19,11 +19,10 @@
 #   path               Print the agent's data directory
 #
 # Examples:
-#   agent.sh --name reviewer setup
-#   agent.sh --name reviewer gateway up
+#   agent.sh --name arthur setup
+#   agent.sh --name arthur gateway up
 #   agent.sh --name prod cli
-#   agent.sh --name prod exec doctor
-#   cd "$(agent.sh --name reviewer path)"
+#   cd "$(agent.sh --name arthur path)"
 #
 set -euo pipefail
 
@@ -52,10 +51,9 @@ usage() {
 	  path               Print the agent's data directory
 
 	Examples:
-	  $(basename "$0") --name reviewer setup
+	  $(basename "$0") --name arthur setup
 	  $(basename "$0") --name prod gateway up
-	  $(basename "$0") --name prod exec doctor
-	  cd "$$(basename "$0") --name reviewer path)"
+	  cd "$$(basename "$0") --name arthur path)"
 	  $(basename "$0") cli
 	EOF
 	exit 0
@@ -146,11 +144,6 @@ cmd_gateway() {
 }
 
 cmd_cli() {
-	require_agent
-	exec "$LAUNCHER" "$@"
-}
-
-cmd_exec() {
 	require_agent
 	exec "$LAUNCHER" "$@"
 }

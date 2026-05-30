@@ -10,6 +10,7 @@
 #
 # This bootstrap:
 #   • Creates the venv inside the agent's data dir (.venv/)
+#   • Installs uv to /usr/local/bin (shared, one-time, root-owned)
 #   • Builds a launcher shim that exports HERMES_HOME+HOME before exec
 #   • Delegates npm install + build to the source tree (shared, one-time)
 #   • Sets up systemd per agent
@@ -20,10 +21,10 @@
 # ── Usage ────────────────────────────────────────────────────────────────
 #
 #   sudo ./bootstrap.sh                              # name: hermes
-#   sudo ./bootstrap.sh --name reviewer               # custom name
-#   sudo ./bootstrap.sh --name dev --data-dir /opt/dev # explicit path
-#   sudo ./bootstrap.sh --name reviewer --clone-from /opt/hermes-agents/hermes
-#   sudo ./bootstrap.sh --name prod --systemd          # + enable on boot
+#   sudo ./bootstrap.sh --name arthur                 # custom name
+#   sudo ./bootstrap.sh --name dev --data-dir /custom # explicit path
+#   sudo ./bootstrap.sh --name arthur --clone-from /opt/hermes-agents/hermes
+#   sudo ./bootstrap.sh --name arthur --systemd       # + enable on boot
 #
 set -euo pipefail
 
@@ -83,6 +84,7 @@ LAUNCHER="$(agent_launcher "$HERMES_DATA")"
 LAUNCHER_DIR="$(dirname "$LAUNCHER")"
 SYSTEMD_UNIT="$(agent_systemd_unit "$AGENT_NAME")"
 HERMES_BIN="$(agent_hermes_bin "$HERMES_DATA")"
+UV_BIN="$(agent_uv_bin "$HERMES_DATA")"
 HOME_DIR="$(agent_home_dir "$HERMES_DATA")"
 
 if [[ $EUID -ne 0 ]]; then
@@ -197,32 +199,44 @@ for pair in \
 done
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4 — Python venv + deps (per-agent, inside data dir)
+# 4 — Install uv (shared system-wide, not inside the venv)
 # ═══════════════════════════════════════════════════════════════════════════
-echo "[4/5] Python environment"
+echo "[4/5] Installing uv (shared)"
 
-UV="${HERMES_DATA}/.venv/bin/uv"
-
-if [[ ! -f "$UV" ]]; then
-	echo "       Installing uv..."
-	mkdir -p "${HERMES_DATA}/.venv/bin"
-	curl -LsSf https://astral.sh/uv/install.sh \
-		| env UV_INSTALL_DIR="${HERMES_DATA}/.venv/bin" sh 2>&1
+if ! command -v uv &>/dev/null; then
+	echo "       Installing uv to /usr/local/bin..."
+	curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh 2>&1
 else
-	echo "       uv                   ── present"
+	echo "       uv (system)          ── present at $(command -v uv)"
 fi
+UV_CMD="$(command -v uv)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4.1 — Python venv + deps (per-agent, inside data dir)
+# ═══════════════════════════════════════════════════════════════════════════
+echo "       Python environment"
 
 if [[ ! -f "${HERMES_BIN}" ]]; then
+	# Ensure the parent directory for the venv exists but the .venv dir itself
+	# does NOT — uv venv creates it.  If uv was previously installed into
+	# $HERMES_DATA/.venv/bin/ (the bug in earlier versions), clean it up.
+	if [[ -d "${HERMES_DATA}/.venv" && ! -f "${HERMES_DATA}/.venv/pyvenv.cfg" ]]; then
+		echo "       Cleaning stale .venv/ (leftover from previous uv install)..."
+		rm -rf "${HERMES_DATA}/.venv"
+	fi
 	echo "       Creating venv..."
-	"$UV" venv "${HERMES_DATA}/.venv"
+	mkdir -p "${HERMES_DATA}"
+	"$UV_CMD" venv "${HERMES_DATA}/.venv" 2>&1
+else
+	echo "       venv                 ── present"
 fi
 
-echo "       Syncing Python deps (uv sync --frozen --extra all)..."
+echo "       Syncing Python deps..."
 cd "${HERMES_SRC}"
-VIRTUAL_ENV="${HERMES_DATA}/.venv" "$UV" sync --frozen --extra all 2>&1
+VIRTUAL_ENV="${HERMES_DATA}/.venv" "$UV_CMD" sync --frozen --extra all 2>&1
 
 echo "       Installing hermes-agent (editable, no-deps)..."
-VIRTUAL_ENV="${HERMES_DATA}/.venv" "$UV" pip install --no-cache-dir --no-deps -e "." 2>&1
+VIRTUAL_ENV="${HERMES_DATA}/.venv" "$UV_CMD" pip install --no-cache-dir --no-deps -e "." 2>&1
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4.5 — Launcher shim (sets HERMES_HOME + HOME per agent)
@@ -267,7 +281,7 @@ echo "       Building terminal UI..."
 # ═══════════════════════════════════════════════════════════════════════════
 if [[ -f "${HERMES_SRC}/tools/skills_sync.py" ]]; then
 	echo "       Syncing bundled skills..."
-	VIRTUAL_ENV="${HERMES_DATA}/.venv" "$(agent_hermes_bin "$HERMES_DATA")" \
+	VIRTUAL_ENV="${HERMES_DATA}/.venv" "${HERMES_BIN%/*}/python" \
 		"${HERMES_SRC}/tools/skills_sync.py" 2>&1
 fi
 
@@ -278,7 +292,7 @@ if [[ ! -L /usr/local/bin/hermes ]]; then
 	ln -sf "${LAUNCHER}" /usr/local/bin/hermes
 	echo "       Symlinked /usr/local/bin/hermes → ${LAUNCHER}"
 elif [[ "$(readlink /usr/local/bin/hermes)" != "${LAUNCHER}" ]]; then
-	echo "       NOTE: /usr/local/bin/hermes already points elsewhere"
+	echo "       NOTE: /usr/local/bin/hermes points elsewhere"
 	echo "         $(readlink /usr/local/bin/hermes)"
 	echo "         To change: ln -sf ${LAUNCHER} /usr/local/bin/hermes"
 fi
