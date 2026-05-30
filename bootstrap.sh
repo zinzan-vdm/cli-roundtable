@@ -102,11 +102,11 @@ echo "────────────────────────�
 # 0 — Source tree (clone or update)
 # ═══════════════════════════════════════════════════════════════════════════
 REPO_URL="https://github.com/NousResearch/hermes-agent.git"
-REPO_TAG="v2026.5.29.2"
+REPO_TAG="v2026.5.16"
 
 if [[ ! -d "$HERMES_SRC" ]]; then
 	echo "[0/5] Cloning Hermes Agent ${REPO_TAG} to ${HERMES_SRC}..."
-	git clone --depth 1 --branch "$REPO_TAG" "$REPO_URL" "$HERMES_SRC"
+	git clone --branch "$REPO_TAG" --single-branch "$REPO_URL" "$HERMES_SRC"
 elif [[ -d "${HERMES_SRC}/.git" ]]; then
 	echo "[0/5] Hermes Agent source at ${HERMES_SRC} (not touching existing repo)"
 else
@@ -215,33 +215,21 @@ done
 # ═══════════════════════════════════════════════════════════════════════════
 # 4 — Install uv (shared system-wide, not inside the venv)
 # ═══════════════════════════════════════════════════════════════════════════
-echo "[4/5] Installing uv (shared)"
+echo "[4/5] Installing uv + Python deps"
 
 if ! command -v uv &>/dev/null; then
 	echo "       Installing uv to /usr/local/bin..."
 	curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh 2>&1
-else
-	echo "       uv (system)          ── present at $(command -v uv)"
 fi
 UV_CMD="$(command -v uv)"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 4.1 — Python venv + deps (per-agent, inside data dir)
-# ═══════════════════════════════════════════════════════════════════════════
-echo "       Python environment"
+echo "       Creating venv in ${HERMES_DATA}/.venv..."
+mkdir -p "${HERMES_DATA}"
+"$UV_CMD" venv --clear "${HERMES_DATA}/.venv" 2>&1
 
-if [[ ! -f "${HERMES_BIN}" ]]; then
-	echo "       Creating venv..."
-	"$UV_CMD" venv --clear "${HERMES_DATA}/.venv" 2>&1
-else
-	echo "       venv                 ── present"
-fi
-
-echo "       Syncing Python deps..."
-UV_PROJECT_ENVIRONMENT="${HERMES_DATA}/.venv" "$UV_CMD" sync --directory "$HERMES_SRC" --frozen --extra all 2>&1
-
-echo "       Installing hermes-agent (editable, no-deps)..."
-UV_PROJECT_ENVIRONMENT="${HERMES_DATA}/.venv" "$UV_CMD" pip install --no-cache-dir --no-deps -e "$HERMES_SRC" 2>&1
+echo "       Installing hermes-agent + all deps..."
+"$UV_CMD" pip install --python "${HERMES_DATA}/.venv/bin/python" \
+	--no-cache-dir -e "${HERMES_SRC}[all]" 2>&1
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4.5 — Launcher shim (sets HERMES_HOME + HOME per agent)
@@ -286,8 +274,7 @@ echo "       Building terminal UI..."
 # ═══════════════════════════════════════════════════════════════════════════
 if [[ -f "${HERMES_SRC}/tools/skills_sync.py" ]]; then
 	echo "       Syncing bundled skills..."
-	UV_PROJECT_ENVIRONMENT="${HERMES_DATA}/.venv" "${HERMES_DATA}/.venv/bin/python" \
-		"${HERMES_SRC}/tools/skills_sync.py" 2>&1
+	"${HERMES_DATA}/.venv/bin/python" "${HERMES_SRC}/tools/skills_sync.py" 2>&1
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
