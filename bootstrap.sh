@@ -102,13 +102,13 @@ echo "────────────────────────�
 # 0 — Source tree (clone or update)
 # ═══════════════════════════════════════════════════════════════════════════
 REPO_URL="https://github.com/NousResearch/hermes-agent.git"
+REPO_TAG="v0.14.0"
 
 if [[ ! -d "$HERMES_SRC" ]]; then
-	echo "[0/5] Cloning Hermes Agent source to ${HERMES_SRC}..."
-	git clone --depth 1 "$REPO_URL" "$HERMES_SRC"
+	echo "[0/5] Cloning Hermes Agent ${REPO_TAG} to ${HERMES_SRC}..."
+	git clone --depth 1 --branch "$REPO_TAG" "$REPO_URL" "$HERMES_SRC"
 elif [[ -d "${HERMES_SRC}/.git" ]]; then
-	echo "[0/5] Updating Hermes Agent source at ${HERMES_SRC}..."
-	cd "$HERMES_SRC" && git pull --ff-only
+	echo "[0/5] Hermes Agent source at ${HERMES_SRC} (not touching existing repo)"
 else
 	echo "[0/5] Source tree ${HERMES_SRC} exists (not a git repo)"
 fi
