@@ -100,6 +100,21 @@ echo "  Systemd: ${INSTALL_SYSTEMD}"
 echo "────────────────────────────────────────────────────────────────────"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 0 — Source tree (clone or update)
+# ═══════════════════════════════════════════════════════════════════════════
+REPO_URL="https://github.com/NousResearch/hermes-agent.git"
+
+if [[ ! -d "$HERMES_SRC" ]]; then
+	echo "[0/5] Cloning Hermes Agent source to ${HERMES_SRC}..."
+	git clone --depth 1 "$REPO_URL" "$HERMES_SRC"
+elif [[ -d "${HERMES_SRC}/.git" ]]; then
+	echo "[0/5] Updating Hermes Agent source at ${HERMES_SRC}..."
+	cd "$HERMES_SRC" && git pull --ff-only
+else
+	echo "[0/5] Source tree ${HERMES_SRC} exists (not a git repo)"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 1 — System packages
 # ═══════════════════════════════════════════════════════════════════════════
 REQUIRED_PKGS=(
@@ -217,16 +232,8 @@ UV_CMD="$(command -v uv)"
 echo "       Python environment"
 
 if [[ ! -f "${HERMES_BIN}" ]]; then
-	# Ensure the parent directory for the venv exists but the .venv dir itself
-	# does NOT — uv venv creates it.  If uv was previously installed into
-	# $HERMES_DATA/.venv/bin/ (the bug in earlier versions), clean it up.
-	if [[ -d "${HERMES_DATA}/.venv" && ! -f "${HERMES_DATA}/.venv/pyvenv.cfg" ]]; then
-		echo "       Cleaning stale .venv/ (leftover from previous uv install)..."
-		rm -rf "${HERMES_DATA}/.venv"
-	fi
 	echo "       Creating venv..."
-	mkdir -p "${HERMES_DATA}"
-	"$UV_CMD" venv "${HERMES_DATA}/.venv" 2>&1
+	"$UV_CMD" venv --clear "${HERMES_DATA}/.venv" 2>&1
 else
 	echo "       venv                 ── present"
 fi
