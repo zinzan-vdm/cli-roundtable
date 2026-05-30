@@ -84,7 +84,6 @@ LAUNCHER="$(agent_launcher "$HERMES_DATA")"
 LAUNCHER_DIR="$(dirname "$LAUNCHER")"
 SYSTEMD_UNIT="$(agent_systemd_unit "$AGENT_NAME")"
 HERMES_BIN="$(agent_hermes_bin "$HERMES_DATA")"
-UV_BIN="$(agent_uv_bin "$HERMES_DATA")"
 HOME_DIR="$(agent_home_dir "$HERMES_DATA")"
 
 if [[ $EUID -ne 0 ]]; then
@@ -239,11 +238,10 @@ else
 fi
 
 echo "       Syncing Python deps..."
-cd "${HERMES_SRC}"
-VIRTUAL_ENV="${HERMES_DATA}/.venv" "$UV_CMD" sync --frozen --extra all 2>&1
+"$UV_CMD" sync --directory "$HERMES_SRC" --python "${HERMES_DATA}/.venv/bin/python" --frozen --extra all 2>&1
 
 echo "       Installing hermes-agent (editable, no-deps)..."
-VIRTUAL_ENV="${HERMES_DATA}/.venv" "$UV_CMD" pip install --no-cache-dir --no-deps -e "." 2>&1
+"$UV_CMD" pip install --python "${HERMES_DATA}/.venv/bin/python" --no-cache-dir --no-deps -e "$HERMES_SRC" 2>&1
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4.5 — Launcher shim (sets HERMES_HOME + HOME per agent)
