@@ -28,18 +28,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/lib/common.sh" ]]; then
-	source "${SCRIPT_DIR}/lib/common.sh"
-else
-	source /opt/hermes/lib/common.sh 2>/dev/null || {
-		echo "Error: lib/common.sh not found alongside bootstrap.sh or in /opt/hermes/" >&2
-		exit 1
-	}
-fi
+source "${SCRIPT_DIR}/lib/common.sh"
 
-# Bootstrap-specific defaults
-INSTALL_SYSTEMD=false
+# ── Script-scoped defaults ────────────────────────────────────────────────
+AGENT_NAME="${AGENT_NAME:-hermes}"
+HERMES_SRC="${HERMES_SRC:-/opt/hermes}"
+HERMES_DATA_ARG=""
 CLONE_FROM=""
+INSTALL_SYSTEMD=false
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Help
@@ -67,12 +63,13 @@ usage() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Parse args
+# Parse args (script-scoped, no global state mutations)
 # ═══════════════════════════════════════════════════════════════════════════
-parse_agent_args "$@"
-set -- "${REMAINING_ARGS[@]}"
 while [[ $# -gt 0 ]]; do
 	case "$1" in
+		--name)         AGENT_NAME="$2";     shift 2 ;;
+		--data-dir)     HERMES_DATA_ARG="$2"; shift 2 ;;
+		--src-dir)      HERMES_SRC="$2";     shift 2 ;;
 		--clone-from)   CLONE_FROM="$2";     shift 2 ;;
 		--systemd)      INSTALL_SYSTEMD=true; shift ;;
 		--help|-h)      usage ;;
@@ -80,11 +77,13 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-resolve_agent_paths
-
-# ── End of shared header ──────────────────────────────────────────────────
-# Everything below is bootstrap-specific logic that does not exist in
-# _hermes-common.sh or agent.sh.
+# ── Resolve paths via pure functions ──────────────────────────────────────
+HERMES_DATA="$(agent_data_dir "$AGENT_NAME" "$HERMES_DATA_ARG")"
+LAUNCHER="$(agent_launcher "$HERMES_DATA")"
+LAUNCHER_DIR="$(dirname "$LAUNCHER")"
+SYSTEMD_UNIT="$(agent_systemd_unit "$AGENT_NAME")"
+HERMES_BIN="$(agent_hermes_bin "$HERMES_DATA")"
+HOME_DIR="$(agent_home_dir "$HERMES_DATA")"
 
 if [[ $EUID -ne 0 ]]; then
 	echo "bootstrap.sh must run as root (apt packages, systemd)." >&2
@@ -131,10 +130,10 @@ mkdir -p "${HERMES_DATA}/skins"
 mkdir -p "${HERMES_DATA}/plans"
 mkdir -p "${HERMES_DATA}/cache/images"
 mkdir -p "${HERMES_DATA}/cache/audio"
-mkdir -p "${HERMES_DATA}/home/bin"
-mkdir -p "${HERMES_DATA}/home/.hermes/memory"
-mkdir -p "${HERMES_DATA}/home/workspaces"
-mkdir -p "${HERMES_DATA}/home/.config"
+mkdir -p "${HOME_DIR}/bin"
+mkdir -p "${HOME_DIR}/.hermes/memory"
+mkdir -p "${HOME_DIR}/workspaces"
+mkdir -p "${HOME_DIR}/.config"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 3 — Clone from existing agent (optional)
@@ -162,7 +161,7 @@ if [[ -n "$CLONE_FROM" ]]; then
 		rsync -a --info=progress2 \
 			--exclude='.cache/' \
 			--exclude='.npm/' \
-			"${CLONE_FROM}/home/" "${HERMES_DATA}/home/"
+			"${CLONE_FROM}/home/" "${HOME_DIR}/"
 	fi
 
 	# Seed .env from clone if not already present
@@ -203,7 +202,6 @@ done
 echo "[4/5] Python environment"
 
 UV="${HERMES_DATA}/.venv/bin/uv"
-VENV_PYTHON="${HERMES_DATA}/.venv/bin/python3"
 
 if [[ ! -f "$UV" ]]; then
 	echo "       Installing uv..."
@@ -214,7 +212,7 @@ else
 	echo "       uv                   ── present"
 fi
 
-if [[ ! -f "$VENV_PYTHON" ]]; then
+if [[ ! -f "${HERMES_BIN}" ]]; then
 	echo "       Creating venv..."
 	"$UV" venv "${HERMES_DATA}/.venv"
 fi
@@ -227,10 +225,9 @@ echo "       Installing hermes-agent (editable, no-deps)..."
 VIRTUAL_ENV="${HERMES_DATA}/.venv" "$UV" pip install --no-cache-dir --no-deps -e "." 2>&1
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4.5 — Launcher shim (sets HERMES_HOME + HOME, from LAUNCHER in common.sh)
+# 4.5 — Launcher shim (sets HERMES_HOME + HOME per agent)
 # ═══════════════════════════════════════════════════════════════════════════
 echo "       Installing launcher..."
-LAUNCHER_DIR="${HERMES_DATA}/home/.local/bin"
 mkdir -p "$LAUNCHER_DIR"
 cat > "${LAUNCHER}" <<-LAUNCHER_SCRIPT
 	#!/usr/bin/env bash
@@ -238,8 +235,8 @@ cat > "${LAUNCHER}" <<-LAUNCHER_SCRIPT
 	unset PYTHONPATH
 	unset PYTHONHOME
 	export HERMES_HOME="${HERMES_DATA}"
-	export HOME="${HERMES_DATA}/home"
-	exec "${HERMES_DATA}/.venv/bin/hermes" "\$@"
+	export HOME="${HOME_DIR}"
+	exec "${HERMES_BIN}" "\$@"
 LAUNCHER_SCRIPT
 chmod 755 "${LAUNCHER}"
 echo "       Launcher: ${LAUNCHER}"
@@ -270,7 +267,7 @@ echo "       Building terminal UI..."
 # ═══════════════════════════════════════════════════════════════════════════
 if [[ -f "${HERMES_SRC}/tools/skills_sync.py" ]]; then
 	echo "       Syncing bundled skills..."
-	VIRTUAL_ENV="${HERMES_DATA}/.venv" "$VENV_PYTHON" \
+	VIRTUAL_ENV="${HERMES_DATA}/.venv" "$(agent_hermes_bin "$HERMES_DATA")" \
 		"${HERMES_SRC}/tools/skills_sync.py" 2>&1
 fi
 
@@ -302,7 +299,7 @@ if $INSTALL_SYSTEMD; then
 	Type=simple
 	ExecStart=${LAUNCHER} gateway run
 	Environment=HERMES_HOME=${HERMES_DATA}
-	Environment=HOME=${HERMES_DATA}/home
+	Environment=HOME=${HOME_DIR}
 	Restart=always
 	RestartSec=5
 	StandardOutput=journal
@@ -329,7 +326,7 @@ cat <<-SUMMARY
 	── Bootstrap complete: agent '${AGENT_NAME}' ──────────────────────────
 
 	  CLI:   /usr/local/bin/hermes chat
-	  Launcher: export PATH="${HERMES_DATA}/home/.local/bin:\$PATH"
+	  Launcher: export PATH="${LAUNCHER_DIR}:\$PATH"
 
 SUMMARY
 if $INSTALL_SYSTEMD; then
@@ -340,7 +337,7 @@ cat <<-SUMMARY
 
 	  Config:  ${HERMES_DATA}/config.yaml
 	  Env:     ${HERMES_DATA}/.env
-	  Home:    ${HERMES_DATA}/home/
+	  Home:    ${HOME_DIR}
 
 	  Setup wizard:
 	    ${LAUNCHER} setup

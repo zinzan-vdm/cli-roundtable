@@ -1,66 +1,54 @@
-# _hermes-common.sh — Shared arg parsing and path resolution for bootstrap.sh & agent.sh
+# lib/common.sh — Pure functions for Hermes Agent path resolution.
 #
-# Source this from scripts in the same directory:
-#   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-#   source "${SCRIPT_DIR}/_hermes-common.sh"
+# Each function takes inputs as arguments and prints the result to stdout.
+# No global variable mutations. Safe to call from any script.
 #
-# After sourcing:
-#   AGENT_NAME, HERMES_SRC are set
-#   HERMES_DATA, LAUNCHER, SYSTEMD_UNIT are resolved
+# Usage:
+#   source "$(dirname "$0")/lib/common.sh"
+#   DATA_DIR="$(agent_data_dir "reviewer")"
+#   LAUNCHER="$(agent_launcher "$DATA_DIR")"
 
-# ── Defaults ──────────────────────────────────────────────────────────────
-: "${AGENT_NAME:=hermes}"
-: "${HERMES_SRC:=/opt/hermes}"
-HERMES_DATA=""      # resolved below, may be set explicitly
-LAUNCHER=""         # resolved below
-SYSTEMD_UNIT=""     # resolved below
-
-# ── Parse agent arguments ─────────────────────────────────────────────────
-# Call this early, before your own arg parsing. Recognises:
-#   --name, --data-dir, --src-dir
-# Stops at the first non-flag argument (your subcommand).
-parse_agent_args() {
-	local args=("$@")
-	local positional=()
-	while [[ ${#args[@]} -gt 0 ]]; do
-		case "${args[0]}" in
-			--name)
-				AGENT_NAME="${args[1]}"
-				shift 2 ;;
-			--data-dir)
-				HERMES_DATA="${args[1]}"
-				shift 2 ;;
-			--src-dir)
-				HERMES_SRC="${args[1]}"
-				shift 2 ;;
-			--)
-				shift
-				positional+=("$@")
-				break ;;
-			-*)
-				# Unknown flag — stop and let the caller handle it
-				positional+=("${args[0]}")
-				shift ;;
-			*)
-				positional+=("${args[0]}")
-				shift ;;
-		esac
-	done
-	# shellcheck disable=SC2034  # used by caller
-	REMAINING_ARGS=("${positional[@]}")
-}
-
-# ── Resolve paths from name ───────────────────────────────────────────────
-# Sets HERMES_DATA, LAUNCHER, SYSTEMD_UNIT based on AGENT_NAME and any
-# explicit overrides.
-resolve_agent_paths() {
-	if [[ -z "$HERMES_DATA" ]]; then
-		HERMES_DATA="/opt/hermes-agents/${AGENT_NAME}"
+# ── agent_data_dir ────────────────────────────────────────────────────────
+# Usage: agent_data_dir <agent_name> [data_dir_override]
+# Prints the agent's data directory.
+agent_data_dir() {
+	local name="${1:?agent_data_dir: agent name required}"
+	local override="${2:-}"
+	if [[ -n "$override" ]]; then
+		echo "$override"
+	else
+		echo "/opt/hermes-agents/${name}"
 	fi
-	LAUNCHER="${HERMES_DATA}/home/.local/bin/hermes"
-	SYSTEMD_UNIT="hermes-gateway-${AGENT_NAME}.service"
 }
 
-# ── Guard: must be sourced, not executed ──────────────────────────────────
-# (no-op guard — this file is designed to always be sourced)
-true
+# ── agent_launcher ────────────────────────────────────────────────────────
+# Usage: agent_launcher <data_dir>
+# Prints the path to the agent's launcher script.
+agent_launcher() {
+	local data_dir="${1:?agent_launcher: data dir required}"
+	echo "${data_dir}/home/.local/bin/hermes"
+}
+
+# ── agent_hermes_bin ──────────────────────────────────────────────────────
+# Usage: agent_hermes_bin <data_dir>
+# Prints the path to the agent's venv hermes binary.
+agent_hermes_bin() {
+	local data_dir="${1:?agent_hermes_bin: data dir required}"
+	echo "${data_dir}/.venv/bin/hermes"
+}
+
+# ── agent_systemd_unit ────────────────────────────────────────────────────
+# Usage: agent_systemd_unit <agent_name>
+# Prints the systemd unit name for the agent.
+agent_systemd_unit() {
+	local name="${1:?agent_systemd_unit: agent name required}"
+	echo "hermes-gateway-${name}.service"
+}
+
+# ── agent_home_dir ────────────────────────────────────────────────────────
+# Usage: agent_home_dir <data_dir>
+# Prints the HOME directory for the agent's subprocesses.
+agent_home_dir() {
+	local data_dir="${1:?agent_home_dir: data dir required}"
+	echo "${data_dir}/home"
+}

@@ -16,7 +16,7 @@
 #   gateway enable|disable  Toggle boot-time auto-start
 #   gateway logs       Tail the gateway's journal
 #   cli|exec [args...] Run hermes (interactive or one-shot)
-#   path               Print the agent's data directory path
+#   path               Print the agent's data directory
 #
 # Examples:
 #   agent.sh --name reviewer setup
@@ -28,20 +28,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/lib/common.sh" ]]; then
-	source "${SCRIPT_DIR}/lib/common.sh"
-else
-	source /opt/hermes/lib/common.sh 2>/dev/null || {
-		echo "Error: lib/common.sh not found alongside agent.sh or in /opt/hermes/" >&2
-		exit 1
-	}
-fi
+source "${SCRIPT_DIR}/lib/common.sh"
 
-parse_agent_args "$@"
-resolve_agent_paths
-set -- "${REMAINING_ARGS[@]}"
+# ── Script-scoped defaults ────────────────────────────────────────────────
+AGENT_NAME="${AGENT_NAME:-hermes}"
+HERMES_DATA_ARG=""
 
-# ── Help ──────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Help
+# ═══════════════════════════════════════════════════════════════════════════
 usage() {
 	cat <<-EOF
 	Usage: $(basename "$0") [--name NAME] [--data-dir DIR] <command> [args...]
@@ -66,6 +61,25 @@ usage() {
 	exit 0
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Parse args (script-scoped, no global state mutations)
+# ═══════════════════════════════════════════════════════════════════════════
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--name)     AGENT_NAME="$2";      shift 2 ;;
+		--data-dir) HERMES_DATA_ARG="$2"; shift 2 ;;
+		--help|-h)  usage ;;
+		--) shift; break ;;
+		*) break ;;  # stop before the subcommand
+	esac
+done
+
+# ── Resolve paths via pure functions ──────────────────────────────────────
+HERMES_DATA="$(agent_data_dir "$AGENT_NAME" "$HERMES_DATA_ARG")"
+LAUNCHER="$(agent_launcher "$HERMES_DATA")"
+SYSTEMD_UNIT="$(agent_systemd_unit "$AGENT_NAME")"
+
+# ── Error helpers ─────────────────────────────────────────────────────────
 die() { echo "Error: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 
