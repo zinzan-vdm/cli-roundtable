@@ -28,6 +28,8 @@
 #
 set -euo pipefail
 
+VERSION_TAG="v2026.5.29.2"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
@@ -102,7 +104,7 @@ echo "────────────────────────�
 # 0 — Source tree (clone or update)
 # ═══════════════════════════════════════════════════════════════════════════
 REPO_URL="https://github.com/NousResearch/hermes-agent.git"
-REPO_TAG="v2026.5.16"
+REPO_TAG="$VERSION_TAG"
 
 if [[ ! -d "$HERMES_SRC" ]]; then
 	echo "[0/5] Cloning Hermes Agent ${REPO_TAG} to ${HERMES_SRC}..."
