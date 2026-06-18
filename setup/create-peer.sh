@@ -6,6 +6,9 @@
 
 set -e
 
+# Alpine doesn't ship curl by default
+apk add --no-cache curl >/dev/null 2>&1
+
 WG_EASY_URL="http://wg-easy:51821"
 COOKIE_JAR="/tmp/wg-cookies.txt"
 
