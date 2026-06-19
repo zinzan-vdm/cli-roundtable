@@ -16,6 +16,7 @@
 #   agent logs <name>                         Follow agent journal
 #   agent setup <name>                        Run hermes setup
 #   agent delete <name>                       Destroy agent + revoke peer
+#   prepare|doctor|ready [--force]            Check host readiness (auto-fix with --force)
 
 set -euo pipefail
 
@@ -271,6 +272,222 @@ cmd_agent_delete() {
 }
 
 # ═══════════════════════════════════════════════════════════════════
+# PREPARE / DOCTOR / READY
+# ═══════════════════════════════════════════════════════════════════
+
+cmd_prepare() {
+  local force=false
+  [[ "${1:-}" == "--force" ]] && force=true
+
+  local errors=()
+  local fixes=()
+
+  echo ""
+  echo "  ╔═══════════════════════════════════════════╗"
+  echo "  ║   roundtable — Host Readiness Check       ║"
+  echo "  ╚═══════════════════════════════════════════╝"
+  echo ""
+
+  # ── Helper: print status line ──────────────────────────────
+  check() {
+    local label="$1" status="$2" detail="$3"
+    printf "  %-35s " "${label}"
+    if [ "$status" = "ok" ]; then
+      echo -e "[✅] ${detail}"
+    else
+      echo -e "[❌] ${detail}"
+    fi
+  }
+
+  # ── 1. Docker (apt, not snap) ──────────────────────────────
+  if command -v docker &>/dev/null; then
+    local docker_ver
+    docker_ver=$(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
+    if docker --version 2>/dev/null | grep -qi "snap"; then
+      check "Docker (apt, not snap)" fail "installed via snap — must use apt"
+      errors+=("docker-snap")
+      fixes+=("snap remove docker && apt install -y docker.io docker-compose-v2")
+    elif [[ -n "$docker_ver" ]]; then
+      check "Docker (apt, not snap)" ok "${docker_ver}"
+    else
+      check "Docker (apt, not snap)" ok "installed"
+    fi
+  else
+    check "Docker (apt, not snap)" fail "not found"
+    errors+=("docker")
+    fixes+=("apt install -y docker.io docker-compose-v2")
+  fi
+
+  # ── 2. Docker Compose v2 ───────────────────────────────────
+  if docker compose version &>/dev/null; then
+    local compose_ver
+    compose_ver=$(docker compose version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
+    check "Docker Compose v2" ok "${compose_ver:-installed}"
+  else
+    check "Docker Compose v2" fail "not found"
+    errors+=("docker-compose")
+    fixes+=("apt install -y docker-compose-v2")
+  fi
+
+  # ── 3. LXD ─────────────────────────────────────────────────
+  if command -v lxc &>/dev/null; then
+    local lxd_ver
+    lxd_ver=$(lxc version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || lxc --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
+    check "LXD" ok "${lxd_ver:-installed}"
+  else
+    check "LXD" fail "not found"
+    errors+=("lxd")
+    fixes+=("snap install lxd && lxd init --auto --storage-backend dir")
+  fi
+
+  # ── 4. LXD storage (dir backend) ───────────────────────────
+  if command -v lxc &>/dev/null; then
+    local storage_info
+    storage_info=$(lxc storage list 2>/dev/null | grep -v '+' | tail -n +2 | head -5)
+    if echo "$storage_info" | grep -qi "dir"; then
+      local pool_name
+      pool_name=$(echo "$storage_info" | grep -i "dir" | awk '{print $2}')
+      check "LXD storage (dir)" ok "${pool_name:-dir pool}"
+    elif [[ -n "$storage_info" ]]; then
+      local pool_type
+      pool_type=$(echo "$storage_info" | awk '{print $4}')
+      check "LXD storage (dir)" fail "found ${pool_type:-unknown} backend — needs dir"
+      errors+=("lxd-storage")
+      fixes+=("lxd init --auto --storage-backend dir")
+    else
+      check "LXD storage (dir)" fail "no storage pool configured"
+      errors+=("lxd-storage")
+      fixes+=("lxd init --auto --storage-backend dir")
+    fi
+  else
+    check "LXD storage (dir)" skip "(LXD not installed)"
+  fi
+
+  # ── 5. iptables rules (DOCKER-USER + lxdbr0) ───────────────
+  if iptables -L DOCKER-USER -n 2>/dev/null | grep -q "lxdbr0"; then
+    check "iptables (DOCKER-USER)" ok "lxdbr0 FORWARD accepted"
+  else
+    check "iptables (DOCKER-USER)" fail "lxdbr0 not in DOCKER-USER chain"
+    errors+=("iptables")
+    fixes+=("iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT")
+  fi
+
+  # ── 6. Swap (≥1GB) ────────────────────────────────────────
+  local swap_total
+  swap_total=$(swapon --show=size --noheadings --bytes 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s}')
+  if [[ -n "$swap_total" && "$swap_total" -ge 1073741824 ]]; then
+    local swap_hr
+    swap_hr=$(numfmt --to=iec "$swap_total" 2>/dev/null || echo "${swap_total}B")
+    check "Swap (≥1GB)" ok "${swap_hr}"
+  elif [[ -n "$swap_total" ]]; then
+    local swap_hr
+    swap_hr=$(numfmt --to=iec "$swap_total" 2>/dev/null || echo "${swap_total}B")
+    check "Swap (≥1GB)" fail "${swap_hr} — too small"
+    errors+=("swap")
+    fixes+=("fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile")
+  else
+    check "Swap (≥1GB)" fail "none"
+    errors+=("swap")
+    fixes+=("fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile")
+  fi
+
+  # ── 7. Free disk (≥5GB) ──────────────────────────────────
+  local avail_kb
+  avail_kb=$(df / 2>/dev/null | awk 'NR==2 {print $4}')
+  if [[ -n "$avail_kb" && "$avail_kb" -ge 5242880 ]]; then
+    local avail_hr
+    avail_hr=$(numfmt --to=iec "$((avail_kb * 1024))" 2>/dev/null || echo "${avail_kb}KB")
+    check "Free disk (≥5GB)" ok "${avail_hr}"
+  elif [[ -n "$avail_kb" ]]; then
+    local avail_hr
+    avail_hr=$(numfmt --to=iec "$((avail_kb * 1024))" 2>/dev/null || echo "${avail_kb}KB")
+    check "Free disk (≥5GB)" fail "${avail_hr} — too low"
+    errors+=("disk")
+    fixes+=("Free up space — see 'docker system prune' or remove old LXD images")
+  else
+    check "Free disk (≥5GB)" fail "could not determine"
+  fi
+
+  # ── 8. Python 3 ────────────────────────────────────────────
+  if command -v python3 &>/dev/null; then
+    local py_ver
+    py_ver=$(python3 --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
+    check "Python 3" ok "${py_ver:-installed}"
+  else
+    check "Python 3" fail "not found"
+    errors+=("python3")
+    fixes+=("apt install -y python3")
+  fi
+
+  echo ""
+
+  # ── Summary ─────────────────────────────────────────────────
+  if [ ${#errors[@]} -eq 0 ]; then
+    echo "  ✅ All checks passed. Host is ready."
+    return 0
+  fi
+
+  if $force; then
+    echo "  == Auto-fixing ${#errors[@]} issue(s)..."
+    echo ""
+
+    local i=0
+    for fix in "${fixes[@]}"; do
+      local err="${errors[$i]}"
+      echo "  [$((i+1))/${#errors[@]}] Fixing: ${err}"
+      if [[ "$fix" == apt\ install* ]]; then
+        # Run apt install with sudo detection
+        if [[ $EUID -eq 0 ]]; then
+          eval "$fix -qq" 2>/dev/null || true
+        else
+          eval "sudo $fix -qq" 2>/dev/null || true
+        fi
+      elif [[ "$fix" == snap\ install* ]]; then
+        if [[ $EUID -eq 0 ]]; then
+          eval "$fix" 2>/dev/null || true
+        else
+          eval "sudo $fix" 2>/dev/null || true
+        fi
+      elif [[ "$fix" == iptables* ]]; then
+        if [[ $EUID -eq 0 ]]; then
+          eval "$fix" 2>/dev/null || true
+        else
+          eval "sudo $fix" 2>/dev/null || true
+        fi
+      elif [[ "$fix" == fallocate* ]]; then
+        if [[ $EUID -eq 0 ]]; then
+          eval "$fix" 2>/dev/null || true
+        else
+          eval "sudo $fix" 2>/dev/null || true
+        fi
+      fi
+      i=$((i + 1))
+    done
+
+    echo ""
+    echo "  == Re-running checks..."
+    echo ""
+    # Recursive call without --force to show updated status
+    cmd_prepare
+    return $?
+  else
+    echo "  ❌ ${#errors[@]} issue(s) found. To auto-fix:"
+    echo ""
+    echo "    sudo ./roundtable prepare --force"
+    echo ""
+    echo "  Or fix manually:"
+    echo ""
+    local i=0
+    for fix in "${fixes[@]}"; do
+      echo "  [$((i+1))] ${fix}"
+      i=$((i + 1))
+    done
+    echo ""
+    return 1
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════════
 # DISPATCH
 # ═══════════════════════════════════════════════════════════════════
 
@@ -278,8 +495,9 @@ load_env
 cmd="${1:-help}"; shift 2>/dev/null || true
 
 case "$cmd" in
-  wg)        cmd_wg "$@" ;;
+  wg)          cmd_wg "$@" ;;
   golden-image) cmd_golden_image "$@" ;;
-  agent)     cmd_agent "$@" ;;
-  help|*)    usage ;;
+  agent)       cmd_agent "$@" ;;
+  prepare|doctor|ready) cmd_prepare "$@" ;;
+  help|*)      usage ;;
 esac
