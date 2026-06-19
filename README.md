@@ -78,9 +78,9 @@ Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is publis
 | `roundtable prepare` | Check all prerequisites are installed (Docker, LXD, iptables, swap, disk space) |
 | `roundtable doctor` | Alias for `prepare` |
 | `roundtable ready` | Alias for `prepare` |
-| `roundtable prepare --force` | Auto-install missing prerequisites (requires sudo) |
+| `roundtable prepare --fix` | Auto-install missing prerequisites (requires sudo) |
 
-Run this first on a fresh machine to see what's missing. Use `--force` to fix everything automatically.
+Run this first on a fresh machine to see what's missing. Use `--fix` to fix everything automatically.
 
 ### Agents
 | Command | What it does |

@@ -16,7 +16,7 @@
 #   agent logs <name>                         Follow agent journal
 #   agent setup <name>                        Run hermes setup
 #   agent delete <name>                       Destroy agent + revoke peer
-#   prepare|doctor|ready [--force]            Check host readiness (auto-fix with --force)
+#   prepare|doctor|ready [--fix]            Check host readiness (auto-fix with --fix)
 
 set -euo pipefail
 
@@ -277,7 +277,7 @@ cmd_agent_delete() {
 
 cmd_prepare() {
   local force=false
-  [[ "${1:-}" == "--force" ]] && force=true
+  [[ "${1:-}" == "--fix" ]] && force=true
 
   local errors=()
   local fixes=()
@@ -467,13 +467,13 @@ cmd_prepare() {
     echo ""
     echo "  == Re-running checks..."
     echo ""
-    # Recursive call without --force to show updated status
+    # Recursive call without --fix to show updated status
     cmd_prepare
     return $?
   else
     echo "  ❌ ${#errors[@]} issue(s) found. To auto-fix:"
     echo ""
-    echo "    sudo ./roundtable prepare --force"
+    echo "    sudo ./roundtable prepare --fix"
     echo ""
     echo "  Or fix manually:"
     echo ""
