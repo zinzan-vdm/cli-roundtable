@@ -8,8 +8,8 @@
 #   wg peer new <name>                        Create WireGuard peer
 #   wg peer list                              List peers
 #   wg peer config <name>                     Print peer config
-#   image-base build <version>                Build golden image
-#   image-base rebuild <version>              Rebuild golden image
+#   golden-image build <version>                Build golden image
+#   golden-image rebuild <version>              Rebuild golden image
 #   agent list                                List agents
 #   agent create <name>                       Create agent
 #   agent start|stop|restart|shell <name>     Agent lifecycle
@@ -106,10 +106,10 @@ for p in json.load(sys.stdin):
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# IMAGE-BASE
+# GOLDEN IMAGE
 # ═══════════════════════════════════════════════════════════════════
 
-cmd_image_base() {
+cmd_golden_image() {
   local sub="${1:-}"; shift 2>/dev/null || true
   local version="${1:-main}"
 
@@ -191,7 +191,7 @@ cmd_agent_create() {
   local lxc_name; lxc_name=$(agent_lxc_name "$name")
 
   if ! lxc image alias list 2>/dev/null | grep -q roundtable-agent; then
-    echo "No golden image. Run: roundtable image-base build <version>" >&2
+    echo "No golden image. Run: roundtable golden-image build <version>" >&2
     exit 1
   fi
 
@@ -279,7 +279,7 @@ cmd="${1:-help}"; shift 2>/dev/null || true
 
 case "$cmd" in
   wg)        cmd_wg "$@" ;;
-  image-base) cmd_image_base "$@" ;;
+  golden-image) cmd_golden_image "$@" ;;
   agent)     cmd_agent "$@" ;;
   help|*)    usage ;;
 esac

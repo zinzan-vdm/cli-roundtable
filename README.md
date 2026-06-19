@@ -8,7 +8,7 @@ Hermes Agent cluster manager — LXD system containers + WireGuard VPN. Each age
 cp .env.example .env   # edit WG_HOST (VPS IP) and WG_PASSWORD
 sudo ./roundtable setup # or do it step by step:
 sudo ./roundtable wg up
-sudo ./roundtable image-base build v2026.5.29.2
+sudo ./roundtable golden-image build v2026.5.29.2
 sudo ./roundtable agent create arthur
 sudo ./roundtable agent start arthur
 ```
@@ -48,7 +48,7 @@ sudo ./roundtable agent start arthur
 ```
 
 - **Agents** are LXD system containers cloned from a `roundtable-agent` golden image. LXC containers are namespaced `roundtable-{name}` to avoid polluting the LXD pool — you still use short names in the CLI (`roundtable agent shell arthur`).
-- **Golden image** (`roundtable agent image-base build <version>`) installs Hermes Agent with `--non-interactive --skip-setup` so no TTY is needed.
+- **Golden image** (`roundtable golden-image build <version>`) installs Hermes Agent with `--non-interactive --skip-setup` so no TTY is needed.
 - **VPN** uses wg-easy in Docker. The dashboard (port 51821) is only accessible over the WireGuard tunnel, not public.
 - **Persistent data** per agent lives in `.agents/{name}/volume/`, mounted at `/opt/data` inside the container.
 
@@ -67,8 +67,8 @@ sudo ./roundtable agent start arthur
 ### Golden image
 | Command | What it does |
 |---------|-------------|
-| `roundtable image-base build <version>` | Build golden image with Hermes Agent |
-| `roundtable image-base rebuild <version>` | Rebuild from scratch (deletes old image) |
+| `roundtable golden-image build <version>` | Build golden image with Hermes Agent |
+| `roundtable golden-image rebuild <version>` | Rebuild from scratch (deletes old image) |
 
 Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is published under the `roundtable-agent` alias (see [Resource planning](#resource-planning) for size breakdown).
 
@@ -153,13 +153,13 @@ All in `.env`:
 
 ## Version pinning
 
-All software versions are pinned in [`VERSIONS.md`](VERSIONS.md) for reproducible builds.
+Software versions are pinned in the code itself — check `.env.example`, `compose.yml`, and the `roundtable` script for exact pins.
 
 | What's pinned | How | Override |
 |--------------|-----|----------|
 | **wg-easy** Docker image | `WG_EASY_VERSION` in .env / compose.yml | `WG_EASY_VERSION=15` in .env |
 | **Ubuntu base** (golden image) | `UBUNTU_IMAGE` in .env / roundtable script | `UBUNTU_IMAGE=ubuntu:22.04` in .env |
 | **wireguard-tools, curl, ca-certificates** (golden image) | Apt version pins in `roundtable` script | `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` in .env |
-| **Hermes Agent** | CLI argument to `image-base build` | Pass a different version: `image-base build v2026.6.1` |
+| **Hermes Agent** | CLI argument to `golden-image build` | Pass a different version: `golden-image build v2026.6.1` |
 
 > What isn't pinned: Node.js, Python, Playwright, ffmpeg — these are installed by Hermes Agent's own installer and come from its bundled versions. To change those, pin a different Hermes release.
