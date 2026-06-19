@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# peers — Manage WireGuard peers via the wg-easy API.
+#
+# Usage:
+#   ./peers new <name>       Create a new peer and print its config
+#   ./peers list             List all peers
+#   ./peers config <name>    Print a peer's config
+#   ./peers help             Show this message
+#
+# Requires: curl, .env with WG_PASSWORD set.
+# wg-easy must be running (docker compose up -d).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COOKIE_JAR=$(mktemp /tmp/wg-cookies.XXXXXX)
+cleanup() { rm -f "$COOKIE_JAR"; }
+trap cleanup EXIT
+
+# ── Config ────────────────────────────────────────────────────
+DOTENV="${SCRIPT_DIR}/.env"
+WG_HOST="localhost"
+WG_PORT="51821"
+BASE_URL="http://${WG_HOST}:${WG_PORT}"
+
+# ── Load .env ─────────────────────────────────────────────────
+if [[ -f "$DOTENV" ]]; then
+  source "$DOTENV"
+fi
+
+WG_PASSWORD="${WG_PASSWORD:-}"
+
+# ── Help ──────────────────────────────────────────────────────
+usage() {
+  sed -n 's/^# //p; s/^#$//p' "$0"
+  exit 0
+}
+
+# ── Auth ──────────────────────────────────────────────────────
+auth() {
+  if [[ -z "$WG_PASSWORD" ]]; then
+    echo "Error: WG_PASSWORD not set in ${DOTENV}" >&2
+    exit 1
+  fi
+  curl -sf -X POST "${BASE_URL}/api/session" \
+    -H "Content-Type: application/json" \
+    -d "{\"password\":\"${WG_PASSWORD}\"}" \
+    -c "$COOKIE_JAR" -o /dev/null 2>/dev/null
+}
+
+# ── Commands ──────────────────────────────────────────────────
+cmd_new() {
+  local name="${1:?Usage: peers new <name>}"
+  auth
+
+  # Check if already exists
+  local existing
+  existing=$(curl -sf -b "$COOKIE_JAR" "${BASE_URL}/api/wireguard/client" 2>/dev/null || echo "[]")
+  if echo "$existing" | grep -q "\"name\":\"${name}\""; then
+    echo "Client '${name}' already exists." >&2
+    echo "Config:" >&2
+    cmd_config "$name"
+    exit 0
+  fi
+
+  echo "==> Creating client '${name}'..." >&2
+  curl -sf -X POST "${BASE_URL}/api/wireguard/client" \
+    -H "Content-Type: application/json" \
+    -b "$COOKIE_JAR" \
+    -d "{\"name\":\"${name}\"}" -o /dev/null
+
+  echo "==> Fetching configuration..." >&2
+  cmd_config "$name"
+}
+
+cmd_list() {
+  auth
+  local peers
+  peers=$(curl -sf -b "$COOKIE_JAR" "${BASE_URL}/api/wireguard/client" 2>/dev/null || echo "[]")
+  echo "$peers" | python3 -c "
+import json,sys
+peers = json.load(sys.stdin)
+if not peers:
+    print('No peers configured.')
+for p in peers:
+    enabled = '✓' if p.get('enabled', True) else '✗'
+    addr = p.get('address', '?')
+    name = p.get('name', '?')
+    print(f'  {enabled} {name:20s} {addr}')
+" 2>/dev/null || echo "$peers"
+}
+
+cmd_config() {
+  local name="${1:?Usage: peers config <name>}"
+  auth
+  local config
+  config=$(curl -sf -b "$COOKIE_JAR" "${BASE_URL}/api/wireguard/client/${name}/configuration" 2>/dev/null)
+  if [[ -z "$config" ]]; then
+    echo "Error: client '${name}' not found." >&2
+    exit 1
+  fi
+  echo "$config"
+}
+
+# ── Dispatch ──────────────────────────────────────────────────
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  new)    cmd_new "$@" ;;
+  list)   cmd_list ;;
+  config) cmd_config "$@" ;;
+  help|*) usage ;;
+esac

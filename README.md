@@ -11,7 +11,7 @@ Containerised Hermes Agent cluster with built-in WireGuard VPN.
 └──────┬───────┴──────┬───────┘
        │              │
        └──────┬───────┘
-              │ Docker bridge (cluster-net / 10.10.0.0/24)
+              │ Docker bridge (net / 10.10.0.0/24)
        ┌──────┴───────┐
        │  wg-easy      │   WireGuard VPN + web UI
        │  10.10.0.1    │   Ports: 51820 (VPN), 51821 (dashboard)
@@ -30,27 +30,23 @@ Containerised Hermes Agent cluster with built-in WireGuard VPN.
 
 ## Usage
 
-### 1. Prerequisites
-
-- Docker + Compose plugin
-
-### 2. Configure
+### 1. Configure
 
 ```bash
 cp .env.example .env
 # Edit .env — set WG_HOST to your VPS IP and choose a WG_PASSWORD
 ```
 
-### 3. Start the cluster
+### 2. Start the cluster
 
 ```bash
 docker compose up -d
 ```
 
-This pulls the official Hermes images (if not cached) and starts all agents
-and the WireGuard VPN.
+This pulls the official Hermes images and starts all agents and the
+WireGuard VPN.
 
-### 4. Configure an agent
+### 3. Configure an agent
 
 ```bash
 docker compose --profile setup run --rm setup-arthur
@@ -59,10 +55,10 @@ docker compose --profile setup run --rm setup-arthur
 This runs the Hermes setup wizard interactively. Configure your model
 provider, API keys, and preferences.
 
-### 5. Connect your laptop
+### 4. Connect your laptop
 
 ```bash
-docker compose --profile setup run --rm create-peer
+./peers new admin          # or ./peers new laptop
 ```
 
 This creates a WireGuard client and prints its configuration. Save the
@@ -82,7 +78,9 @@ wg-quick up wg0
 # Or via the WireGuard app on macOS/Windows
 ```
 
-### 6. Access agents
+### 5. Access agents
+
+From your laptop over the VPN:
 
 ```bash
 curl http://10.10.0.10:9119   # agent-arthur's dashboard
@@ -94,6 +92,16 @@ Add entries to your laptop's `/etc/hosts` for convenience:
 10.10.0.10 agent-arthur
 10.10.0.11 agent-bob
 ```
+
+## Peer Management
+
+```bash
+./peers new admin       Create a new peer and print its config
+./peers list            List all peers
+./peers config admin    Print an existing peer's config
+```
+
+Requires `WG_PASSWORD` set in `.env` and wg-easy running (`docker compose up -d`).
 
 ## WireGuard Dashboard
 
@@ -115,7 +123,7 @@ agent-bob:
   volumes:
     - bob-data:/opt/data
   networks:
-    cluster-net:
+    net:
       ipv4_address: 10.10.0.11
   restart: unless-stopped
   stop_grace_period: 30s
@@ -159,8 +167,7 @@ State in volumes is preserved — config, credentials, and sessions survive.
 
 ```
 ├── compose.yml          Multi-agent cluster definition
+├── peers                WireGuard peer management (runs on host)
 ├── .env.example         Configuration template
-├── setup/
-│   └── create-peer.sh   Script to generate WireGuard client config
 └── README.md
 ```
