@@ -33,6 +33,10 @@ load_env() {
   WG_PASSWORD="${WG_PASSWORD:-}"
   AGENT_MEMORY="${AGENT_MEMORY:-768MB}"
   AGENT_CPU="${AGENT_CPU:-1}"
+  UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04}"
+  WG_TOOLS_VER="${WG_TOOLS_VER:-1.0.20210914-1ubuntu4}"
+  CURL_VER="${CURL_VER:-8.5.0-2ubuntu10.9}"
+  CA_CERT_VER="${CA_CERT_VER:-20240203}"
 }
 
 # ── Help ──────────────────────────────────────────────────────────
@@ -125,7 +129,7 @@ cmd_image_base() {
   fi
 
   echo "==> Building golden image (Hermes ${version})..." >&2
-  lxc launch ubuntu:24.04 roundtable-tmp
+  lxc launch "${UBUNTU_IMAGE}" roundtable-tmp
 
   # Wait for network (up to 60s)
   echo -n "==> Waiting for network..." >&2
@@ -138,7 +142,7 @@ cmd_image_base() {
 
   echo "==> Installing wireguard-tools..." >&2
   lxc exec roundtable-tmp -- apt-get update -qq
-  lxc exec roundtable-tmp -- apt-get install -y -qq wireguard-tools curl ca-certificates
+  lxc exec roundtable-tmp -- apt-get install -y -qq "wireguard-tools=${WG_TOOLS_VER}" "curl=${CURL_VER}" "ca-certificates=${CA_CERT_VER}"
 
   echo "==> Installing Hermes Agent (${version})..." >&2
   lxc exec roundtable-tmp -- bash -c "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-setup --branch \"${version}\""

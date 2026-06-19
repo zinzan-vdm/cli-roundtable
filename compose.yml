@@ -10,7 +10,7 @@ volumes:
 
 services:
   wg-easy:
-    image: ghcr.io/wg-easy/wg-easy:latest
+    image: ghcr.io/wg-easy/wg-easy:${WG_EASY_VERSION:-14}
     cap_add:
       - NET_ADMIN
       - SYS_MODULE

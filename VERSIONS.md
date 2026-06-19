@@ -31,7 +31,7 @@ Record of software versions used by the cli-roundtable cluster. Pin to these for
 ## VPN
 | Software | Version | Notes |
 |----------|---------|-------|
-| wg-easy image | **v14+** (latest `ghcr.io/wg-easy/wg-easy`) | Requires PASSWORD_HASH (bcrypt), not PASSWORD |
+| wg-easy image | **14** (`ghcr.io/wg-easy/wg-easy:14`) | Pinned tag (set via `WG_EASY_VERSION` in .env) |
 | WireGuard port | **51820/udp** | Public |
 | Dashboard port | **51821** | Internal only (10.10.0.2:51821) |
 | Internal subnet | **10.10.0.0/24** | Docker bridge |

@@ -15,13 +15,16 @@ sudo ./roundtable agent start arthur
 
 ## Prerequisites
 
-| Requirement | Why |
-|-------------|-----|
-| **Docker** (apt, not snap) | Docker snap is confined and can't access `/opt`. Install via `apt install docker.io docker-compose-v2`. |
-| **LXD** (snap) | Install via `snap install lxd`. Initialize with dir storage: `lxd init --auto --storage-backend dir`. |
-| **iptables** rules | Docker-USER chain must accept LXD traffic. Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` and `iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT`. |
-| **Swap** (1GB+ recommended) | Golden image build (unsquashfs) and Hermes install need breathing room on 4GB hosts. |
-| **~5GB free disk** | Golden image is 1.4GB + Hermes install overhead + agent rootfs clones. |
+| Requirement | Min. version | Why |
+|-------------|-------------|-----|
+| **Docker** (apt, not snap) | 28.x | Docker snap is confined and can't access `/opt`. Install via `apt install docker.io docker-compose-v2`. Tested with **29.1.3**. |
+| **Docker Compose v2** | 2.27+ | Comes with `docker-compose-v2` apt package. Tested with **2.40.3**. |
+| **LXD** (snap) | 5.x+ | Install via `snap install lxd`. Tested with **6.8**. Initialize with dir storage: `lxd init --auto --storage-backend dir`. |
+| **iptables** fix | — | Docker-USER chain must accept LXD traffic. Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` and `iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT`. |
+| **Swap** (1GB+) | — | Golden image build (unsquashfs) and Hermes install need breathing room on 4GB hosts. |
+| **~5GB free disk** | — | Golden image is 1.4GB + Hermes install overhead + agent rootfs clones. |
+
+> Tested on **Ubuntu 26.04**, Linux **7.0.0-15-generic**, Hetzner CX22 (4GB RAM, 2 vCPU).
 
 ## Architecture
 
@@ -145,3 +148,18 @@ All in `.env`:
 | `AGENT_MEMORY` | `768MB` | Per-agent memory limit (LXD cgroup) |
 | `AGENT_CPU` | `1` | Per-agent CPU limit (LXD cgroup) |
 | `LXD_STORAGE` | `roundtable` | LXD storage pool name |
+| `WG_EASY_VERSION` | `14` | wg-easy Docker image tag |
+| `UBUNTU_IMAGE` | `ubuntu:24.04` | LXD image alias for golden image base |
+
+## Version pinning
+
+All software versions are pinned in [`VERSIONS.md`](VERSIONS.md) for reproducible builds.
+
+| What's pinned | How | Override |
+|--------------|-----|----------|
+| **wg-easy** Docker image | `WG_EASY_VERSION` in .env / compose.yml | `WG_EASY_VERSION=15` in .env |
+| **Ubuntu base** (golden image) | `UBUNTU_IMAGE` in .env / roundtable script | `UBUNTU_IMAGE=ubuntu:22.04` in .env |
+| **wireguard-tools, curl, ca-certificates** (golden image) | Apt version pins in `roundtable` script | `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` in .env |
+| **Hermes Agent** | CLI argument to `image-base build` | Pass a different version: `image-base build v2026.6.1` |
+
+> What isn't pinned: Node.js, Python, Playwright, ffmpeg — these are installed by Hermes Agent's own installer and come from its bundled versions. To change those, pin a different Hermes release.
