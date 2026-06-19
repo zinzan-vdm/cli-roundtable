@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# roundtable — Hermes Agent cluster manager
+#
+# Usage: roundtable <command> [args...]
+#
+# Commands:
+#   wg up|down|logs                           Manage wg-easy VPN
+#   wg peer new <name>                        Create WireGuard peer
+#   wg peer list                              List peers
+#   wg peer config <name>                     Print peer config
+#   image-base build <version>                Build golden image
+#   image-base rebuild <version>              Rebuild golden image
+#   agent list                                List agents
+#   agent create <name>                       Create agent
+#   agent start|stop|restart|shell <name>     Agent lifecycle
+#   agent logs <name>                         Follow agent journal
+#   agent setup <name>                        Run hermes setup
+#   agent delete <name>                       Destroy agent + revoke peer
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOTENV="${ROOT}/.env"
+AGENTS_DIR="${ROOT}/.agents"
+COMPOSE_FILE="${ROOT}/compose.yml"
+WG_API="http://localhost:51821"
+COOKIE_JAR=$(mktemp /tmp/roundtable-cookies.XXXXXX)
+trap 'rm -f "$COOKIE_JAR"' EXIT
+
+# ── Load .env ─────────────────────────────────────────────────────
+load_env() {
+  [[ -f "$DOTENV" ]] && source "$DOTENV"
+  WG_PASSWORD="${WG_PASSWORD:-}"
+  AGENT_MEMORY="${AGENT_MEMORY:-1G}"
+  AGENT_CPU="${AGENT_CPU:-1}"
+}
+
+# ── Help ──────────────────────────────────────────────────────────
+usage() { sed -n 's/^# //p; s/^#$//p' "$0"; exit 0; }
+
+# ── wg-easy API helpers ───────────────────────────────────────────
+wg_auth() {
+  [[ -n "$WG_PASSWORD" ]] || { echo "Error: WG_PASSWORD not set in .env" >&2; exit 1; }
+  curl -sf -X POST "${WG_API}/api/session" \
+    -H "Content-Type: application/json" \
+    -d "{\"password\":\"${WG_PASSWORD}\"}" \
+    -c "$COOKIE_JAR" -o /dev/null 2>/dev/null || {
+    echo "Error: wg-easy auth failed. Is wg-easy running? (roundtable wg up)" >&2
+    exit 1
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# WG
+# ═══════════════════════════════════════════════════════════════════
+
+cmd_wg() {
+  local sub="${1:-}"; shift 2>/dev/null || true
+  case "$sub" in
+    up)    docker compose -f "$COMPOSE_FILE" up -d wg-easy ;;
+    down)  docker compose -f "$COMPOSE_FILE" down ;;
+    logs)  exec docker compose -f "$COMPOSE_FILE" logs -f wg-easy ;;
+    peer)  cmd_wg_peer "$@" ;;
+    *)     usage ;;
+  esac
+}
+
+cmd_wg_peer() {
+  local action="${1:-}"; shift 2>/dev/null || true
+  wg_auth
+  case "$action" in
+    new)
+      local name="${1:?Usage: roundtable wg peer new <name>}"
+      local existing; existing=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+      if echo "$existing" | grep -q "\"name\":\"${name}\""; then
+        echo "Peer '${name}' already exists:" >&2
+        cmd_wg_peer config "$name"
+        return
+      fi
+      echo "Creating peer '${name}'..." >&2
+      curl -sf -X POST "${WG_API}/api/wireguard/client" \
+        -H "Content-Type: application/json" -b "$COOKIE_JAR" \
+        -d "{\"name\":\"${name}\"}" -o /dev/null
+      cmd_wg_peer config "$name"
+      ;;
+    list)
+      local peers; peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+      echo "$peers" | python3 -c "
+import json, sys
+for p in json.load(sys.stdin):
+    e = '+' if p.get('enabled', True) else '-'
+    print(f'  {e} {(p.get(\"name\") or \"?\").ljust(20)} {p.get(\"address\") or \"?\"}')" 2>/dev/null || echo "$peers"
+      ;;
+    config)
+      local name="${1:?Usage: roundtable wg peer config <name>}"
+      local config; config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${name}/configuration" 2>/dev/null)
+      [[ -n "$config" ]] || { echo "Peer '${name}' not found." >&2; exit 1; }
+      echo "$config"
+      ;;
+    *) usage ;;
+  esac
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# IMAGE-BASE
+# ═══════════════════════════════════════════════════════════════════
+
+cmd_image_base() {
+  local sub="${1:-}"; shift 2>/dev/null || true
+  local version="${1:-main}"
+
+  [[ "$sub" =~ ^(build|rebuild)$ ]] || usage
+
+  if [ "$sub" = "rebuild" ]; then
+    lxc image alias delete hermes-agent 2>/dev/null || true
+    lxc image delete hermes-agent 2>/dev/null || true
+  fi
+
+  if lxc image alias list 2>/dev/null | grep -q hermes-agent; then
+    echo "Golden image already exists. Use 'rebuild' to replace it." >&2
+    exit 1
+  fi
+
+  echo "==> Building golden image (Hermes ${version})..." >&2
+  lxc launch ubuntu:24.04 roundtable-tmp
+
+  # Wait for network (up to 60s)
+  echo -n "==> Waiting for network..." >&2
+  for i in $(seq 1 60); do
+    if lxc exec roundtable-tmp -- ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+      echo " connected." >&2; break
+    fi
+    echo -n "." >&2; sleep 1
+  done
+
+  echo "==> Installing wireguard-tools..." >&2
+  lxc exec roundtable-tmp -- apt-get update -qq
+  lxc exec roundtable-tmp -- apt-get install -y -qq wireguard-tools curl ca-certificates
+
+  echo "==> Installing Hermes Agent (${version})..." >&2
+  lxc exec roundtable-tmp -- bash -c "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup --branch \"${version}\""
+
+  echo "==> Cleaning up..." >&2
+  lxc exec roundtable-tmp -- apt-get clean -qq
+  lxc exec roundtable-tmp -- rm -rf /var/lib/apt/lists/*
+
+  echo "==> Publishing image..." >&2
+  lxc stop roundtable-tmp
+  lxc publish roundtable-tmp --alias hermes-agent --public=false
+  lxc delete roundtable-tmp
+
+  echo "Golden image 'hermes-agent' (Hermes ${version}) published." >&2
+  lxc image list hermes-agent
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# AGENT
+# ═══════════════════════════════════════════════════════════════════
+
+cmd_agent() {
+  local sub="${1:-}"; shift 2>/dev/null || true
+  case "$sub" in
+    list)    lxc list -c n,s,4,m ;;
+    create)  cmd_agent_create "$@" ;;
+    start|stop|restart)
+      local name="${1:?Usage: roundtable agent $sub <name>}"
+      lxc "$sub" "$name" ;;
+    shell)   lxc exec "${1:?Usage: roundtable agent shell <name>}" bash ;;
+    logs)
+      local name="${1:?Usage: roundtable agent logs <name>}"
+      lxc exec "$name" -- journalctl -u hermes\\* -f 2>/dev/null || lxc exec "$name" -- journalctl -f ;;
+    setup)
+      lxc exec "${1:?Usage: roundtable agent setup <name>}" -- hermes setup ;;
+    delete)  cmd_agent_delete "$@" ;;
+    *)       usage ;;
+  esac
+}
+
+cmd_agent_create() {
+  local name="${1:?Usage: roundtable agent create <name>}"
+
+  if ! lxc image alias list 2>/dev/null | grep -q hermes-agent; then
+    echo "No golden image. Run: roundtable image-base build <version>" >&2
+    exit 1
+  fi
+
+  local agent_dir="${AGENTS_DIR}/${name}"
+  mkdir -p "${agent_dir}/volume"
+
+  echo "==> Launching agent '${name}'..." >&2
+  lxc launch hermes-agent "$name" \
+    -c limits.memory="${AGENT_MEMORY}" \
+    -c limits.cpu="${AGENT_CPU}"
+
+  # Mount persistent volume for HERMES_HOME
+  lxc config device add "$name" volume disk \
+    source="${agent_dir}/volume" path=/opt/data
+
+  # Wait for boot
+  sleep 5
+
+  # Create WireGuard peer
+  echo "==> Setting up WireGuard peer..." >&2
+  local wg_config=""
+  wg_auth 2>/dev/null || true
+  if [[ -n "$WG_PASSWORD" ]]; then
+    local existing
+    existing=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+    if ! echo "$existing" | grep -q "\"name\":\"${name}\""; then
+      curl -sf -X POST "${WG_API}/api/wireguard/client" \
+        -H "Content-Type: application/json" -b "$COOKIE_JAR" \
+        -d "{\"name\":\"${name}\"}" -o /dev/null 2>/dev/null || true
+    fi
+    wg_config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${name}/configuration" 2>/dev/null || true)
+  fi
+
+  if [[ -n "$wg_config" ]]; then
+    echo "$wg_config" | lxc exec "$name" -- tee /etc/wireguard/wg0.conf > /dev/null
+    lxc exec "$name" -- systemctl enable wg-quick@wg0 2>/dev/null || true
+    lxc exec "$name" -- wg-quick up wg0 2>/dev/null || true
+  fi
+
+  echo "==> Agent '${name}' ready." >&2
+  echo "  Dashboard: http://10.10.1.x:9119  (check IP: roundtable wg peer list)" >&2
+  echo "  Shell:     roundtable agent shell ${name}" >&2
+  echo "  Setup:     roundtable agent setup ${name}" >&2
+  lxc list -c n,s,4 "$name"
+}
+
+cmd_agent_delete() {
+  local name="${1:?Usage: roundtable agent delete <name>}"
+
+  echo "Removing agent '${name}'..." >&2
+
+  wg_auth 2>/dev/null || true
+  [[ -n "$WG_PASSWORD" ]] && \
+    curl -sf -X DELETE -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${name}" -o /dev/null 2>/dev/null || true
+
+  lxc stop "$name" 2>/dev/null || true
+  lxc delete "$name" 2>/dev/null || true
+  rm -rf "${AGENTS_DIR}/${name}"
+
+  echo "Agent '${name}' deleted." >&2
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# DISPATCH
+# ═══════════════════════════════════════════════════════════════════
+
+load_env
+cmd="${1:-help}"; shift 2>/dev/null || true
+
+case "$cmd" in
+  wg)        cmd_wg "$@" ;;
+  image-base) cmd_image_base "$@" ;;
+  agent)     cmd_agent "$@" ;;
+  help|*)    usage ;;
+esac
