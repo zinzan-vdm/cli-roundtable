@@ -67,18 +67,7 @@ sudo ./roundtable agent start arthur
 | `roundtable image-base build <version>` | Build golden image with Hermes Agent |
 | `roundtable image-base rebuild <version>` | Rebuild from scratch (deletes old image) |
 
-Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is published under the `roundtable-agent` alias.
-
-**Image size:** ~1.4GB. Breakdown:
-- Ubuntu 24.04 base: ~270MB
-- Hermes Agent + Python 3.11 + Node.js 22: ~200MB
-- Playwright Chromium (177MB) + headless shell (114MB): ~290MB
-- ffmpeg + ripgrep + deps: ~200MB
-- wireguard-tools + ca-certs: ~10MB
-- 90 Hermes skills: ~50MB
-- Squashfs overhead: ~280MB
-
-The image is cached by LXD — future agent clones unpack in ~30s and share the base image on disk (copy-on-write with dir backend is a full copy, each agent takes ~1.4GB extra disk).
+Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is published under the `roundtable-agent` alias (see [Resource planning](#resource-planning) for size breakdown).
 
 ### Agents
 | Command | What it does |
@@ -99,9 +88,39 @@ Each agent runs a Node.js gateway (~120MB idle) and may spawn tools (Chromium, P
 
 | Task profile | RAM per agent | CPU per agent | Notes |
 |-------------|--------------|--------------|-------|
-| Idle / light | ~250MB | minimal | Gateway running, no active tasks |
+| Idle / light | ~250MB | minimal | Gateway running (140MB observed), no active tasks |
 | Browser tasks | ~500–700MB | ~1 vCPU | Headless Chromium adds 250–500MB |
 | Image/script tasks | ~400MB | ~1 vCPU burst | Python/PIL, short-lived |
+
+### Golden image
+
+Build once, clone many. The image is ~1.4GB and contains everything Hermes needs:
+
+```
+Component                Size
+─────────────────────────────────────────
+Ubuntu 24.04 base        ~270 MB
+Hermes + Python + Node   ~200 MB
+Playwright Chromium      ~177 MB
+Playwright headless      ~114 MB
+ffmpeg + deps            ~200 MB
+wireguard-tools + certs  ~10 MB
+90 Hermes skills          ~50 MB
+Squashfs overhead        ~280 MB
+─────────────────────────────────────────
+Total                   ~1,415 MB
+```
+
+Cloning from the image takes ~30s. With LXD's dir storage backend (no CoW) each clone takes a full ~1.4GB on disk. For 3–5 agents, budget ~5–8GB for agent rootfs.
+
+### Runtime ports inside each agent
+
+| Port | Service | Bind |
+|------|---------|------|
+| 8642 | Hermes API server | 127.0.0.1 (loopback only) |
+| 9119 | Hermes dashboard | 127.0.0.1 (separate process) |
+
+Port 8642 accepts requests with `x-api-key: <API_SERVER_KEY>`. Both are local-only — agents communicate via WireGuard, not public network.
 
 ### Capacity by plan
 
