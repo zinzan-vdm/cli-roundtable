@@ -23,17 +23,19 @@ sudo ./roundtable agent start arthur
 │  │  └─ 51821 (dashboard, VPN only)│  │
 │  │  └─ 51820/udp (WireGuard)     │  │
 │  └─────────────────────────────────┘  │
-│  ┌──────────┐ ┌──────────┐ ┌───────┐  │
-│  │ Agent A  │ │ Agent B  │ │  ...  │  │
-│  │ (LXD)    │ │ (LXD)    │ │ (LXD) │  │
-│  └──────────┘ └──────────┘ └───────┘  │
+│  ┌────────────┐ ┌────────────┐ ┌───┐  │
+│  │ Agent A    │ │ Agent B    │ │...│  │
+│  │ (LXD:      │ │ (LXD:      │ │   │  │
+│  │  roundtable-a)│  roundtable-b)│   │  │
+│  └────────────┘ └────────────┘ └───┘  │
 │  ┌─────────────────────────────────┐  │
 │  │  lxdbr0 (NAT) │ .agents/{n}/   │  │
 │  └─────────────────────────────────┘  │
 └───────────────────────────────────────┘
 ```
 
-- **Agents** are LXD system containers (via golden image) — not Docker. They run Hermes Agent with full system access.
+- **Agents** are LXD system containers cloned from a `roundtable-agent` golden image. LXC containers are namespaced `roundtable-{name}` to avoid polluting the LXD pool — you still use short names in the CLI (`roundtable agent shell arthur`).
+- **Golden image** (`roundtable agent image-base build <version>`) installs Hermes Agent with `--non-interactive --skip-setup` so no TTY is needed.
 - **VPN** uses wg-easy in Docker. The dashboard (port 51821) is only accessible over the WireGuard tunnel, not public.
 - **Persistent data** per agent lives in `.agents/{name}/volume/`, mounted at `/opt/data` inside the container.
 
@@ -55,7 +57,7 @@ sudo ./roundtable agent start arthur
 | `roundtable image-base build <version>` | Build golden image with Hermes Agent |
 | `roundtable image-base rebuild <version>` | Rebuild from scratch (deletes old image) |
 
-Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is tagged `<version>`.
+Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is published under the `roundtable-agent` alias.
 
 ### Agents
 | Command | What it does |
@@ -100,6 +102,6 @@ All in `.env`:
 |----------|---------|---------|
 | `WG_HOST` | — | VPS IP or domain (required) |
 | `WG_PASSWORD` | — | wg-easy dashboard password (required) |
-| `AGENT_MEMORY` | `1G` | Per-agent memory limit (LXD) |
-| `AGENT_CPU` | `1` | Per-agent CPU limit (LXD) |
+| `AGENT_MEMORY` | `768M` | Per-agent memory limit (LXD cgroup) |
+| `AGENT_CPU` | `1` | Per-agent CPU limit (LXD cgroup) |
 | `LXD_STORAGE` | `roundtable` | LXD storage pool name |

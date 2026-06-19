@@ -31,7 +31,7 @@ trap 'rm -f "$COOKIE_JAR"' EXIT
 load_env() {
   [[ -f "$DOTENV" ]] && source "$DOTENV"
   WG_PASSWORD="${WG_PASSWORD:-}"
-  AGENT_MEMORY="${AGENT_MEMORY:-1G}"
+  AGENT_MEMORY="${AGENT_MEMORY:-768M}"
   AGENT_CPU="${AGENT_CPU:-1}"
 }
 
@@ -112,11 +112,14 @@ cmd_image_base() {
   [[ "$sub" =~ ^(build|rebuild)$ ]] || usage
 
   if [ "$sub" = "rebuild" ]; then
+    lxc image alias delete roundtable-agent 2>/dev/null || true
+    lxc image delete roundtable-agent 2>/dev/null || true
+    # Clean up legacy alias
     lxc image alias delete hermes-agent 2>/dev/null || true
     lxc image delete hermes-agent 2>/dev/null || true
   fi
 
-  if lxc image alias list 2>/dev/null | grep -q hermes-agent; then
+  if lxc image alias list 2>/dev/null | grep -q roundtable-agent; then
     echo "Golden image already exists. Use 'rebuild' to replace it." >&2
     exit 1
   fi
@@ -138,7 +141,7 @@ cmd_image_base() {
   lxc exec roundtable-tmp -- apt-get install -y -qq wireguard-tools curl ca-certificates
 
   echo "==> Installing Hermes Agent (${version})..." >&2
-  lxc exec roundtable-tmp -- bash -c "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup --branch \"${version}\""
+  lxc exec roundtable-tmp -- bash -c "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-setup --branch \"${version}\""
 
   echo "==> Cleaning up..." >&2
   lxc exec roundtable-tmp -- apt-get clean -qq
@@ -146,31 +149,34 @@ cmd_image_base() {
 
   echo "==> Publishing image..." >&2
   lxc stop roundtable-tmp
-  lxc publish roundtable-tmp --alias hermes-agent --public=false
+  lxc publish roundtable-tmp --alias roundtable-agent --public=false
   lxc delete roundtable-tmp
 
-  echo "Golden image 'hermes-agent' (Hermes ${version}) published." >&2
-  lxc image list hermes-agent
+  echo "Golden image 'roundtable-agent' (Hermes ${version}) published." >&2
+  lxc image list roundtable-agent
 }
 
 # ═══════════════════════════════════════════════════════════════════
 # AGENT
 # ═══════════════════════════════════════════════════════════════════
 
+# Convert short name to LXC container name (namespaced)
+agent_lxc_name() { echo "roundtable-${1}"; }
+
 cmd_agent() {
   local sub="${1:-}"; shift 2>/dev/null || true
   case "$sub" in
-    list)    lxc list -c n,s,4,m ;;
+    list)    lxc list -c n,s,4,m "roundtable-" 2>/dev/null || lxc list -c n,s,4,m ;;
     create)  cmd_agent_create "$@" ;;
     start|stop|restart)
       local name="${1:?Usage: roundtable agent $sub <name>}"
-      lxc "$sub" "$name" ;;
-    shell)   lxc exec "${1:?Usage: roundtable agent shell <name>}" bash ;;
+      lxc "$sub" "$(agent_lxc_name "$name")" ;;
+    shell)   lxc exec "$(agent_lxc_name "${1:?Usage: roundtable agent shell <name>}")" bash ;;
     logs)
-      local name="${1:?Usage: roundtable agent logs <name>}"
-      lxc exec "$name" -- journalctl -u hermes\\* -f 2>/dev/null || lxc exec "$name" -- journalctl -f ;;
+      local lxc_name; lxc_name=$(agent_lxc_name "${1:?Usage: roundtable agent logs <name>}")
+      lxc exec "$lxc_name" -- journalctl -u "hermes*" -f 2>/dev/null || lxc exec "$lxc_name" -- journalctl -f ;;
     setup)
-      lxc exec "${1:?Usage: roundtable agent setup <name>}" -- hermes setup ;;
+      lxc exec "$(agent_lxc_name "${1:?Usage: roundtable agent setup <name>}")" -- hermes setup ;;
     delete)  cmd_agent_delete "$@" ;;
     *)       usage ;;
   esac
@@ -178,8 +184,9 @@ cmd_agent() {
 
 cmd_agent_create() {
   local name="${1:?Usage: roundtable agent create <name>}"
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
 
-  if ! lxc image alias list 2>/dev/null | grep -q hermes-agent; then
+  if ! lxc image alias list 2>/dev/null | grep -q roundtable-agent; then
     echo "No golden image. Run: roundtable image-base build <version>" >&2
     exit 1
   fi
@@ -187,13 +194,13 @@ cmd_agent_create() {
   local agent_dir="${AGENTS_DIR}/${name}"
   mkdir -p "${agent_dir}/volume"
 
-  echo "==> Launching agent '${name}'..." >&2
-  lxc launch hermes-agent "$name" \
+  echo "==> Launching agent '${name}' (${lxc_name})..." >&2
+  lxc launch roundtable-agent "$lxc_name" \
     -c limits.memory="${AGENT_MEMORY}" \
     -c limits.cpu="${AGENT_CPU}"
 
   # Mount persistent volume for HERMES_HOME
-  lxc config device add "$name" volume disk \
+  lxc config device add "$lxc_name" volume disk \
     source="${agent_dir}/volume" path=/opt/data
 
   # Wait for boot
@@ -215,29 +222,30 @@ cmd_agent_create() {
   fi
 
   if [[ -n "$wg_config" ]]; then
-    echo "$wg_config" | lxc exec "$name" -- tee /etc/wireguard/wg0.conf > /dev/null
-    lxc exec "$name" -- systemctl enable wg-quick@wg0 2>/dev/null || true
-    lxc exec "$name" -- wg-quick up wg0 2>/dev/null || true
+    echo "$wg_config" | lxc exec "$lxc_name" -- tee /etc/wireguard/wg0.conf > /dev/null
+    lxc exec "$lxc_name" -- systemctl enable wg-quick@wg0 2>/dev/null || true
+    lxc exec "$lxc_name" -- wg-quick up wg0 2>/dev/null || true
   fi
 
   echo "==> Agent '${name}' ready." >&2
   echo "  Dashboard: http://10.10.1.x:9119  (check IP: roundtable wg peer list)" >&2
   echo "  Shell:     roundtable agent shell ${name}" >&2
   echo "  Setup:     roundtable agent setup ${name}" >&2
-  lxc list -c n,s,4 "$name"
+  lxc list -c n,s,4 "$lxc_name"
 }
 
 cmd_agent_delete() {
   local name="${1:?Usage: roundtable agent delete <name>}"
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
 
-  echo "Removing agent '${name}'..." >&2
+  echo "Removing agent '${name}' (${lxc_name})..." >&2
 
   wg_auth 2>/dev/null || true
   [[ -n "$WG_PASSWORD" ]] && \
     curl -sf -X DELETE -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${name}" -o /dev/null 2>/dev/null || true
 
-  lxc stop "$name" 2>/dev/null || true
-  lxc delete "$name" 2>/dev/null || true
+  lxc stop "$lxc_name" 2>/dev/null || true
+  lxc delete "$lxc_name" 2>/dev/null || true
   rm -rf "${AGENTS_DIR}/${name}"
 
   echo "Agent '${name}' deleted." >&2
