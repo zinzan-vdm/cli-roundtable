@@ -13,6 +13,16 @@ sudo ./roundtable agent create arthur
 sudo ./roundtable agent start arthur
 ```
 
+## Prerequisites
+
+| Requirement | Why |
+|-------------|-----|
+| **Docker** (apt, not snap) | Docker snap is confined and can't access `/opt`. Install via `apt install docker.io docker-compose-v2`. |
+| **LXD** (snap) | Install via `snap install lxd`. Initialize with dir storage: `lxd init --auto --storage-backend dir`. |
+| **iptables** rules | Docker-USER chain must accept LXD traffic. Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` and `iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT`. |
+| **Swap** (1GB+ recommended) | Golden image build (unsquashfs) and Hermes install need breathing room on 4GB hosts. |
+| **~5GB free disk** | Golden image is 1.4GB + Hermes install overhead + agent rootfs clones. |
+
 ## Architecture
 
 ```
@@ -59,6 +69,17 @@ sudo ./roundtable agent start arthur
 
 Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is published under the `roundtable-agent` alias.
 
+**Image size:** ~1.4GB. Breakdown:
+- Ubuntu 24.04 base: ~270MB
+- Hermes Agent + Python 3.11 + Node.js 22: ~200MB
+- Playwright Chromium (177MB) + headless shell (114MB): ~290MB
+- ffmpeg + ripgrep + deps: ~200MB
+- wireguard-tools + ca-certs: ~10MB
+- 90 Hermes skills: ~50MB
+- Squashfs overhead: ~280MB
+
+The image is cached by LXD — future agent clones unpack in ~30s and share the base image on disk (copy-on-write with dir backend is a full copy, each agent takes ~1.4GB extra disk).
+
 ### Agents
 | Command | What it does |
 |---------|-------------|
@@ -102,6 +123,6 @@ All in `.env`:
 |----------|---------|---------|
 | `WG_HOST` | — | VPS IP or domain (required) |
 | `WG_PASSWORD` | — | wg-easy dashboard password (required) |
-| `AGENT_MEMORY` | `768M` | Per-agent memory limit (LXD cgroup) |
+| `AGENT_MEMORY` | `768MB` | Per-agent memory limit (LXD cgroup) |
 | `AGENT_CPU` | `1` | Per-agent CPU limit (LXD cgroup) |
 | `LXD_STORAGE` | `roundtable` | LXD storage pool name |
