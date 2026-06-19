@@ -13,14 +13,14 @@ Containerised Hermes Agent cluster with built-in WireGuard VPN.
        └──────┬───────┘
               │ Docker bridge (net / 10.10.0.0/24)
        ┌──────┴───────┐
-       │  wg-easy      │   WireGuard VPN + web UI
-       │  10.10.0.1    │   Ports: 51820 (VPN), 51821 (dashboard)
-       └───────────────┘
+       │  wg-easy     │   WireGuard VPN + web UI
+       │  10.10.0.1   │   Ports: 51820 (VPN), 51821 (dashboard)
+       └──────────────┘
               │ WireGuard tunnel
        ┌──────┴───────┐
-       │ Your laptop   │   Access agents at 10.10.0.10:9119 etc.
-       │ 10.10.1.x     │
-       └───────────────┘
+       │ Your laptop  │   Access agents at 10.10.0.10:9119 etc.
+       │ 10.10.1.x    │
+       └──────────────┘
 ```
 
 - Each agent runs in an isolated container using the official `nousresearch/hermes-agent` image
