@@ -23,7 +23,7 @@ Containerised Hermes Agent cluster with built-in WireGuard VPN.
        └───────────────┘
 ```
 
-- Each agent runs in an isolated container with its own filesystem and venv
+- Each agent runs in an isolated container using the official [nousresearch/hermes-agent](https://hub.docker.com/r/nousresearch/hermes-agent) image
 - Agents communicate via the Docker bridge network by hostname
 - wg-easy provides the VPN endpoint and a web dashboard for managing peers
 - Agent state persists in Docker volumes across container restarts/upgrades
@@ -33,7 +33,6 @@ Containerised Hermes Agent cluster with built-in WireGuard VPN.
 ### 1. Prerequisites
 
 - Docker + Compose plugin
-- `modprobe wireguard` (WireGuard kernel module — load once)
 
 ### 2. Configure
 
@@ -48,7 +47,8 @@ cp .env.example .env
 docker compose up -d
 ```
 
-This starts all agents and the WireGuard VPN.
+This pulls the official Hermes images (if not cached) and starts all agents
+and the WireGuard VPN.
 
 ### 4. Configure an agent
 
@@ -56,7 +56,8 @@ This starts all agents and the WireGuard VPN.
 docker compose --profile setup run --rm setup-arthur
 ```
 
-This runs the Hermes setup wizard interactively. Configure your model provider, API keys, and preferences.
+This runs the Hermes setup wizard interactively. Configure your model
+provider, API keys, and preferences.
 
 ### 5. Connect your laptop
 
@@ -64,7 +65,8 @@ This runs the Hermes setup wizard interactively. Configure your model provider, 
 docker compose --profile setup run --rm create-peer
 ```
 
-This creates a WireGuard client and prints its configuration. Save the output on your laptop:
+This creates a WireGuard client and prints its configuration. Save the
+output on your laptop:
 
 ```
 # Linux/macOS: save to /etc/wireguard/wg0.conf
@@ -109,16 +111,15 @@ Add a new agent by copying the `agent-arthur` service block in `compose.yml`:
 
 ```yaml
 agent-bob:
-  build:
-    context: .
-    dockerfile: Containerfile
+  image: nousresearch/hermes-agent:v2026.5.29.2
   volumes:
-    - bob-data:/hermes-data
+    - bob-data:/opt/data
   networks:
     cluster-net:
       ipv4_address: 10.10.0.11
   restart: unless-stopped
   stop_grace_period: 30s
+  command: ["gateway", "run"]
 ```
 
 Declare the volume at the top:
@@ -131,14 +132,16 @@ volumes:
 Then run its setup:
 
 ```bash
-docker compose run --rm agent-bob hermes setup
+docker compose --profile setup run --rm setup-bob
 ```
+
+(Define a matching `setup-bob` service in compose.yml first.)
 
 ## Upgrading
 
 ```bash
-docker compose build    # rebuild images with latest Hermes source
-docker compose up -d    # restart containers
+docker compose pull       # pull latest official images
+docker compose up -d      # restart containers
 ```
 
 State in volumes is preserved — config, credentials, and sessions survive.
@@ -155,7 +158,6 @@ State in volumes is preserved — config, credentials, and sessions survive.
 ## Files
 
 ```
-├── Containerfile        Hermes Agent image build
 ├── compose.yml          Multi-agent cluster definition
 ├── .env.example         Configuration template
 ├── setup/

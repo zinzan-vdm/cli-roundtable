@@ -38,16 +38,15 @@ services:
 
   # ── Hermes Agents ───────────────────────────────────────────
   agent-arthur:
-    build:
-      context: .
-      dockerfile: Containerfile
+    image: nousresearch/hermes-agent:v2026.5.29.2
     volumes:
-      - arthur-data:/hermes-data
+      - arthur-data:/opt/data
     networks:
       cluster-net:
         ipv4_address: 10.10.0.10
     restart: unless-stopped
     stop_grace_period: 30s
+    command: ["gateway", "run"]
 
   # Add more agents by copying the block above and assigning a
   # new static IP + volume name (e.g. 10.10.0.11, bob-data).
@@ -57,12 +56,10 @@ services:
   # Interactive setup wizard for agent-arthur
   setup-arthur:
     profiles: ["setup"]
-    build:
-      context: .
-      dockerfile: Containerfile
+    image: nousresearch/hermes-agent:v2026.5.29.2
     volumes:
-      - arthur-data:/hermes-data
-    entrypoint: ["hermes", "setup"]
+      - arthur-data:/opt/data
+    command: ["setup"]
 
   # Create initial WireGuard peer for your laptop
   create-peer:
