@@ -1,2 +1,14 @@
+# Secrets
 .env
-.agents/
+
+# Build artifacts
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
