@@ -23,12 +23,12 @@ Containerised Hermes Agent cluster with built-in WireGuard VPN.
        └───────────────┘
 ```
 
-- Each agent runs in an isolated container using the official [nousresearch/hermes-agent](https://hub.docker.com/r/nousresearch/hermes-agent) image
+- Each agent runs in an isolated container using the official `nousresearch/hermes-agent` image
 - Agents communicate via the Docker bridge network by hostname
 - wg-easy provides the VPN endpoint and a web dashboard for managing peers
-- Agent state persists in Docker volumes across container restarts/upgrades
+- Agent state persists in Docker volumes
 
-## Usage
+## Quick Start
 
 ### 1. Configure
 
@@ -37,23 +37,23 @@ cp .env.example .env
 # Edit .env — set WG_HOST to your VPS IP and choose a WG_PASSWORD
 ```
 
-### 2. Start the cluster
+### 2. Start
 
 ```bash
 docker compose up -d
 ```
 
-This pulls the official Hermes images and starts all agents and the
-WireGuard VPN.
+This pulls the official Hermes images and starts all agents + the VPN.
 
 ### 3. Configure an agent
 
 ```bash
-docker compose --profile setup run --rm setup-arthur
+docker compose run agent-arthur setup
 ```
 
-This runs the Hermes setup wizard interactively. Configure your model
-provider, API keys, and preferences.
+This runs the Hermes setup wizard interactively in the running agent's
+context. Configure your model provider, API keys, and preferences.
+The setup persists in the agent's volume — you only need to do it once.
 
 ### 4. Connect your laptop
 
@@ -62,20 +62,12 @@ provider, API keys, and preferences.
 ```
 
 This creates a WireGuard client and prints its configuration. Save the
-output on your laptop:
-
-```
-# Linux/macOS: save to /etc/wireguard/wg0.conf
-# Windows/macOS: import into the WireGuard client app
-```
-
-Then connect:
+output on your laptop as `/etc/wireguard/wg0.conf` (or import into the
+WireGuard client app). Then connect:
 
 ```bash
-# Linux
-wg-quick up wg0
-
-# Or via the WireGuard app on macOS/Windows
+wg-quick up wg0                    # Linux
+# Or connect via the WireGuard app on macOS/Windows
 ```
 
 ### 5. Access agents
@@ -113,6 +105,43 @@ http://<vps-ip>:51821/
 
 Login with the password from `WG_PASSWORD` in your `.env`.
 
+## Volumes
+
+Each agent uses a Docker volume for persistent state (config, credentials,
+sessions, skills, memory). The volume mounts at `/opt/data` inside the
+container — this is the agent's `HERMES_HOME`.
+
+### Named volumes (default)
+
+```yaml
+volumes:
+  arthur-data:           # managed by Docker, stored in /var/lib/docker/volumes/
+```
+
+These survive container restarts and upgrades. To inspect or back up:
+
+```bash
+docker run --rm -v arthur-data:/data alpine ls /data
+docker run --rm -v arthur-data:/data alpine tar czf - /data > arthur-backup.tar.gz
+```
+
+### Bind mounts (host-accessible)
+
+To edit files on the host directly, replace the named volume with a bind
+mount:
+
+```yaml
+volumes:
+  - /opt/hermes-agents/arthur:/opt/data   # host path
+```
+
+Now you can read and write agent files directly from the host:
+
+```bash
+ls /opt/hermes-agents/arthur/config.yaml
+ls /opt/hermes-agents/arthur/skills/
+```
+
 ## Adding Agents
 
 Add a new agent by copying the `agent-arthur` service block in `compose.yml`:
@@ -140,10 +169,8 @@ volumes:
 Then run its setup:
 
 ```bash
-docker compose --profile setup run --rm setup-bob
+docker compose run agent-bob setup
 ```
-
-(Define a matching `setup-bob` service in compose.yml first.)
 
 ## Upgrading
 
