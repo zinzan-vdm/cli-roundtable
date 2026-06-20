@@ -59,6 +59,7 @@ Each agent has **two network paths**: the LXD bridge for outbound internet acces
 | **Python 3** | 3.x | `apt install -y python3` (python3-bcrypt for password hashing) |
 | **Swap** (≥1 GB) | — | `fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` |
 | **iptables rule** | — | `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT` |
+| **wireguard-tools** | — | `apt install -y wireguard-tools` |
 | **Free disk** | ≥5 GB | — |
 
 > Tested on Ubuntu 26.04 / Linux 7.0.0-15 / Hetzner CX22 (4 GB RAM, 2 vCPU, ~21 GB free). LXD 6.8, Docker 29.1.3, Compose 2.40.3.
@@ -67,7 +68,7 @@ Each agent has **two network paths**: the LXD bridge for outbound internet acces
 
 **Why the iptables rule?** Docker's `DOCKER-USER` chain defaults to `FORWARD DROP`, which blocks LXD container outbound traffic. Adding `lxdbr0` ACCEPT rules restores it.
 
-**Quick check:** `sudo ./roundtable prepare` runs all of these checks and shows what's missing. Add `--fix` to install everything automatically.
+**Quick check:** `sudo ./roundtable check` runs all of these checks and shows what's missing. Add `--fix` to install everything automatically.
 
 ---
 
@@ -81,25 +82,28 @@ cp .env.example .env
 #   python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(rounds=12)).decode())"
 
 # 2. Check host readiness (optional — auto-fixes with --fix)
-sudo ./roundtable prepare --fix
+sudo ./roundtable check --fix
 
 # 3. Start the VPN
 sudo ./roundtable wg up
 
-# 4. Build the golden image (one-time)
+# 4. Join the host to the WireGuard mesh
+sudo ./roundtable wg host up      # host gets 10.10.1.2 (first peer)
+
+# 5. Build the golden image (one-time)
 sudo ./roundtable golden-image build v2026.5.29.2
 
-# 5. Create and start agents
+# 6. Create and start agents
 sudo ./roundtable agent create arthur
 sudo ./roundtable agent start arthur
 
-# 6. Setup Hermes inside the agent
+# 7. Setup Hermes inside the agent
 sudo ./roundtable agent setup arthur
 
-# 7. Start the Hermes messaging gateway
+# 8. Start the Hermes messaging gateway
 sudo ./roundtable agent gateway up arthur  # Messaging platform integration (Discord, Telegram, etc.)
 
-# 8. Create a WireGuard config for your local machine
+# 9. Create a WireGuard config for your local machine
 roundtable wg peer new admin  # creates and prints a config you can import in your WireGuard client
 ```
 
@@ -108,6 +112,7 @@ roundtable wg peer new admin  # creates and prints a config you can import in yo
 | Step | What runs | Time |
 |------|-----------|------|
 | `wg up` | Docker Compose starts wg-easy container | ~10s |
+| `wg host up` | Creates host WireGuard peer, enables tunnel, host joins mesh | ~5s |
 | `golden-image build vX` | Launches LXD temp container, installs Hermes, publishes image | ~3–4 min |
 | `agent create arthur` | Clones golden image → LXC container, creates WG peer, writes config | ~1 min |
 | `agent setup arthur` | Runs `hermes setup --run-as-user root` inside container | ~30s |
@@ -117,13 +122,11 @@ roundtable wg peer new admin  # creates and prints a config you can import in yo
 
 ## CLI reference
 
-### `prepare`, `doctor`, `ready` — Host readiness
+### `check` — Host readiness
 
 ```bash
-roundtable prepare              # Check all prerequisites
-roundtable doctor               # Same
-roundtable ready                # Same
-roundtable prepare --fix        # Auto-install missing prerequisites
+roundtable check                # Check all prerequisites
+roundtable check --fix          # Auto-install missing prerequisites
 ```
 
 ### `wg` — WireGuard VPN
@@ -135,6 +138,9 @@ roundtable wg logs              # Follow wg-easy logs
 roundtable wg peer new <name>   # Create a WireGuard peer + print config
 roundtable wg peer list         # List all peers with IPs
 roundtable wg peer config <name> # Print peer config (for client machines)
+roundtable wg host up           # Join host to the WireGuard mesh (install tunnel + enable service)
+roundtable wg host down         # Disconnect host from the WireGuard mesh
+roundtable wg host ip           # Print the host's mesh IP
 ```
 
 ### `golden-image` — Agent base image
@@ -178,6 +184,7 @@ Agent containers are configured with `boot.autostart=true` — they automaticall
 | `WG_SUBNET` | `10.10.0.0/24` | — | Docker bridge subnet for wg-easy container |
 | `WG_HOST_IP` | `10.10.0.254` | — | Static IP for wg-easy on the Docker bridge |
 | `WG_POOL_ADDRESS` | `10.10.1.x` | — | WireGuard peer address pool template |
+| `WG_PORT` | `51820` | — | WireGuard tunnel port (public UDP) |
 | `WG_ALLOWED_IPS` | `10.10.0.0/16` | — | Allowed IPs for the WireGuard tunnel |
 | `AGENT_MEMORY` | `768MB` | — | Per-agent RAM limit (LXD cgroup) |
 | `AGENT_CPU` | `1` | — | Per-agent vCPU limit |
@@ -210,7 +217,7 @@ The IP layout is fully configurable via `.env` variables. Defaults shown below:
 
 | Port | Service | Visibility |
 |------|---------|------------|
-| `51820/udp` | WireGuard tunnel | Public (incoming) |
+| `51820/udp` | WireGuard tunnel | Public (incoming, configurable via `WG_PORT`) |
 | `51821` | wg-easy dashboard | Internal only (`WG_HOST_IP:51821`) |
 | `8642` | Hermes API server (per agent) | Agent loopback only |
 | `9119` | Hermes dashboard (per agent) | Agent loopback only |
@@ -223,7 +230,7 @@ The IP layout is fully configurable via `.env` variables. Defaults shown below:
   iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT
   ```
   Without this, LXD containers can't reach the internet (packages, Hermes install, API calls).
-- The host firewall should expose `51820/udp`. Everything else stays internal.
+- The host firewall should expose `51820/udp` (or your `WG_PORT` override). Everything else stays internal.
 - wg-easy dashboard (`51821`) is **not** port-mapped to the host — access it via WireGuard tunnel.
 
 ### Agent connectivity
@@ -231,8 +238,10 @@ The IP layout is fully configurable via `.env` variables. Defaults shown below:
 Each agent gets a WireGuard peer on the pool (`WG_POOL_ADDRESS` → default `10.10.1.x`) via wg-easy. The config is written into the container at `/etc/wireguard/wg0.conf` and activated with `wg-quick up wg0`. This means:
 
 - Agents can reach each other over WireGuard
-- Your local machine can reach all agents by connecting to the same wg-easy server
+- The host VPS is also on the mesh at `.2` (configured via `wg host up`)
+- Your local machine can reach all agents and the host by connecting to the same wg-easy server
 - Hermes dashboard (`:9119`) and API (`:8642`) are accessible over the tunnel
+- SSH into the host from anywhere on the mesh: `ssh user@10.10.1.2`
 
 ---
 
@@ -291,6 +300,7 @@ Everything under our control is pinned to specific versions for reproducible bui
 | What's pinned | Where | How to upgrade |
 |--------------|-------|----------------|
 | wg-easy Docker image | `WG_EASY_VERSION` in `.env` | Set `WG_EASY_VERSION=15` (or whichever) |
+| WireGuard tunnel port | `WG_PORT` in `.env` | Set `WG_PORT=51821` |
 | Ubuntu base image | `UBUNTU_IMAGE` in `.env` | Set `UBUNTU_IMAGE=ubuntu:22.04` |
 | wireguard-tools, curl, ca-certificates | Apt version pins in `roundtable` script | Set `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` in `.env` |
 | Hermes Agent | CLI argument | `golden-image build v2026.6.1` |
@@ -303,12 +313,12 @@ Everything under our control is pinned to specific versions for reproducible bui
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| LXD containers have no network | Docker's `DOCKER-USER` chain drops forwarded packets | Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` (or run `prepare --fix`) |
+| LXD containers have no network | Docker's `DOCKER-USER` chain drops forwarded packets | Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` (or run `check --fix`) |
 | Golden image build OOM on 4 GB hosts | `unsquashfs` during image publish spikes memory | Create swap: `fallocate -l 1G /swapfile && mkswap && swapon` |
 | Docker snap can't see `/opt` | Snap confinement | Install via `apt install docker.io` instead |
 | `$` in .env password gets eaten by shell | Shell variable expansion | Single-quote the value, or escape `$` |
-| `prepare` swap check too strict | `swapon --show --bytes` returns usable space minus swap header (4096 bytes less) | Threshold lowered to ≥1,000,000,000 bytes (≈953 MiB) — less than 1 GiB swap is too small regardless |
-| `prepare` iptables check false negative | `iptables -L` without `-v` doesn't show interface columns | Added `-v` flag so `-i lxdbr0` rules match |
+| `check` swap threshold | `swapon --show --bytes` returns usable space minus swap header (4096 bytes less) | Threshold lowered to ≥1,000,000,000 bytes (≈953 MiB) |
+| `check` iptables false negative | `iptables -L` without `-v` doesn't show interface columns | Added `-v` flag so `-i lxdbr0` rules match |
 
 ---
 
