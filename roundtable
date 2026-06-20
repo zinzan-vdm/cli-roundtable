@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
-# roundtable — Hermes Agent cluster manager
-#
-# Usage: roundtable <command> [args...]
-#
-# Commands:
-#   wg up|down|logs                           Manage wg-easy VPN
-#   wg peer new <name>                        Create WireGuard peer
-#   wg peer list                              List peers
-#   wg peer config <name>                     Print peer config
-#   golden-image build <version>                Build golden image
-#   golden-image rebuild <version>              Rebuild golden image
-#   agent list                                List agents
-#   agent create <name>                       Create agent
-#   agent start|stop|restart|shell <name>     Agent lifecycle
-#   agent logs <name>                         Follow agent journal
-#   agent setup <name>                        Run hermes setup
-#   agent gateway up|down <name>              Start/stop the Hermes gateway
-#   agent delete <name>                       Destroy agent + revoke peer
-#   prepare|doctor|ready [--fix]            Check host readiness (auto-fix with --fix)
-
 set -euo pipefail
+
+usage() {
+  echo "Usage: roundtable <command> [args...]"
+  echo ""
+  echo "Commands:"
+  printf "  %-42s %s\n" "wg up|down|logs" "Manage wg-easy VPN"
+  printf "  %-42s %s\n" "wg peer new <name>" "Create WireGuard peer"
+  printf "  %-42s %s\n" "wg peer list" "List peers"
+  printf "  %-42s %s\n" "wg peer config <name>" "Print peer config"
+  printf "  %-42s %s\n" "golden-image build <version>" "Build golden image"
+  printf "  %-42s %s\n" "golden-image rebuild <version>" "Rebuild golden image"
+  printf "  %-42s %s\n" "agent list" "List agents"
+  printf "  %-42s %s\n" "agent create <name>" "Create agent"
+  printf "  %-42s %s\n" "agent start|stop|restart|shell <name>" "Agent lifecycle"
+  printf "  %-42s %s\n" "agent logs <name>" "Follow agent journal"
+  printf "  %-42s %s\n" "agent setup <name>" "Run hermes setup"
+  printf "  %-42s %s\n" "agent gateway up|down <name>" "Start/stop the Hermes gateway"
+  printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + revoke peer"
+  printf "  %-42s %s\n" "prepare|doctor|ready [--fix]" "Check host readiness (auto-fix with --fix)"
+  exit 0
+}
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOTENV="${ROOT}/.env"
@@ -29,7 +30,6 @@ WG_API="http://10.10.0.2:51821"
 COOKIE_JAR=$(mktemp /tmp/roundtable-cookies.XXXXXX)
 trap 'rm -f "$COOKIE_JAR"' EXIT
 
-# ── Load .env ─────────────────────────────────────────────────────
 load_env() {
   [[ -f "$DOTENV" ]] && source "$DOTENV"
   WG_PASSWORD="${WG_PASSWORD:-}"
@@ -41,10 +41,6 @@ load_env() {
   CA_CERT_VER="${CA_CERT_VER:-20240203}"
 }
 
-# ── Help ──────────────────────────────────────────────────────────
-usage() { sed -n 's/^# //p; s/^#$//p' "$0"; exit 0; }
-
-# ── wg-easy API helpers ───────────────────────────────────────────
 wg_auth() {
   [[ -n "$WG_PASSWORD" ]] || { echo "Error: WG_PASSWORD not set in .env" >&2; exit 1; }
   curl -sf -X POST "${WG_API}/api/session" \
@@ -55,10 +51,6 @@ wg_auth() {
     exit 1
   }
 }
-
-# ═══════════════════════════════════════════════════════════════════
-# WG
-# ═══════════════════════════════════════════════════════════════════
 
 cmd_wg() {
   local sub="${1:-}"; shift 2>/dev/null || true
@@ -107,10 +99,6 @@ for p in json.load(sys.stdin):
   esac
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# GOLDEN IMAGE
-# ═══════════════════════════════════════════════════════════════════
-
 cmd_golden_image() {
   local sub="${1:-}"; shift 2>/dev/null || true
   local version="${1:-main}"
@@ -120,7 +108,6 @@ cmd_golden_image() {
   if [ "$sub" = "rebuild" ]; then
     lxc image alias delete roundtable-agent 2>/dev/null || true
     lxc image delete roundtable-agent 2>/dev/null || true
-    # Clean up legacy alias
     lxc image alias delete hermes-agent 2>/dev/null || true
     lxc image delete hermes-agent 2>/dev/null || true
   fi
@@ -162,11 +149,6 @@ cmd_golden_image() {
   lxc image list roundtable-agent
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# AGENT
-# ═══════════════════════════════════════════════════════════════════
-
-# Convert short name to LXC container name (namespaced)
 agent_lxc_name() { echo "roundtable-${1}"; }
 
 cmd_agent() {
@@ -207,19 +189,15 @@ cmd_agent_create() {
     -c limits.cpu="${AGENT_CPU}" \
     -c boot.autostart=true
 
-  # Mount persistent volume for HERMES_HOME
   lxc config device add "$lxc_name" volume disk \
     source="${agent_dir}/volume" path=/opt/data
 
-  # Wait for boot
   sleep 5
 
-  # Create WireGuard peer and get config by ID (wg-easy v14+ uses UUID, not name)
   echo "==> Setting up WireGuard peer..." >&2
   local wg_config=""
   wg_auth 2>/dev/null || true
   if [[ -n "$WG_PASSWORD" ]]; then
-    # Create peer if not already exists
     local existing
     existing=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
     if ! echo "$existing" | grep -q "\"name\":\"${name}\""; then
@@ -227,7 +205,6 @@ cmd_agent_create() {
         -H "Content-Type: application/json" -b "$COOKIE_JAR" \
         -d "{\"name\":\"${name}\"}" -o /dev/null 2>/dev/null || true
     fi
-    # Fetch config by ID (v14+ uses UUID path)
     local all_peers
     all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
     local peer_id
@@ -265,7 +242,6 @@ cmd_agent_gateway() {
   case "$action" in
     up)
       echo "==> Installing and starting gateway for '${name}'..." >&2
-      # Install creates user systemd service, enables it, and starts it
       lxc exec "$lxc_name" -- bash -c "printf 'Y\nY\n' | hermes gateway --accept-hooks install"
       echo "Gateway started for '${name}'." >&2
       lxc exec "$lxc_name" -- hermes gateway status
@@ -290,7 +266,6 @@ cmd_agent_delete() {
 
   wg_auth 2>/dev/null || true
   if [[ -n "$WG_PASSWORD" ]]; then
-    # wg-easy v14+ uses UUID for API paths, not name
     local all_peers
     all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
     local peer_id
@@ -314,10 +289,6 @@ for p in peers:
   echo "Agent '${name}' deleted." >&2
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# PREPARE / DOCTOR / READY
-# ═══════════════════════════════════════════════════════════════════
-
 cmd_prepare() {
   local force=false
   [[ "${1:-}" == "--fix" ]] && force=true
@@ -331,7 +302,6 @@ cmd_prepare() {
   echo "  ╚═══════════════════════════════════════════╝"
   echo ""
 
-  # ── Helper: print status line ──────────────────────────────
   check() {
     local label="$1" status="$2" detail="$3"
     printf "  %-35s " "${label}"
@@ -342,7 +312,6 @@ cmd_prepare() {
     fi
   }
 
-  # ── 1. Docker (apt, not snap) ──────────────────────────────
   if command -v docker &>/dev/null; then
     local docker_ver
     docker_ver=$(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
@@ -361,7 +330,6 @@ cmd_prepare() {
     fixes+=("apt install -y docker.io docker-compose-v2")
   fi
 
-  # ── 2. Docker Compose v2 ───────────────────────────────────
   if docker compose version &>/dev/null; then
     local compose_ver
     compose_ver=$(docker compose version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
@@ -372,7 +340,6 @@ cmd_prepare() {
     fixes+=("apt install -y docker-compose-v2")
   fi
 
-  # ── 3. LXD ─────────────────────────────────────────────────
   if command -v lxc &>/dev/null; then
     local lxd_ver
     lxd_ver=$(lxc version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || lxc --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
@@ -383,7 +350,6 @@ cmd_prepare() {
     fixes+=("snap install lxd && lxd init --auto --storage-backend dir")
   fi
 
-  # ── 4. LXD storage (dir backend) ───────────────────────────
   if command -v lxc &>/dev/null; then
     local storage_info
     storage_info=$(lxc storage list 2>/dev/null | grep -v '+' | tail -n +2 | head -5)
@@ -406,7 +372,6 @@ cmd_prepare() {
     check "LXD storage (dir)" skip "(LXD not installed)"
   fi
 
-  # ── 5. iptables rules (DOCKER-USER + lxdbr0) ───────────────
   if iptables -L DOCKER-USER -n -v 2>/dev/null | grep -q "lxdbr0"; then
     check "iptables (DOCKER-USER)" ok "lxdbr0 FORWARD accepted"
   else
@@ -415,43 +380,40 @@ cmd_prepare() {
     fixes+=("iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT")
   fi
 
-  # ── 6. Swap (≥1GB) ────────────────────────────────────────
   local swap_total
   swap_total=$(swapon --show=size --noheadings --bytes 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s}')
   if [[ -n "$swap_total" && "$swap_total" -ge 1000000000 ]]; then
     local swap_hr
     swap_hr=$(numfmt --to=iec "$swap_total" 2>/dev/null || echo "${swap_total}B")
-    check "Swap (≥1GB)" ok "${swap_hr}"
+    check "Swap (>=1GB)" ok "${swap_hr}"
   elif [[ -n "$swap_total" ]]; then
     local swap_hr
     swap_hr=$(numfmt --to=iec "$swap_total" 2>/dev/null || echo "${swap_total}B")
-    check "Swap (≥1GB)" fail "${swap_hr} — too small"
+    check "Swap (>=1GB)" fail "${swap_hr} — too small"
     errors+=("swap")
     fixes+=("fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile")
   else
-    check "Swap (≥1GB)" fail "none"
+    check "Swap (>=1GB)" fail "none"
     errors+=("swap")
     fixes+=("fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile")
   fi
 
-  # ── 7. Free disk (≥5GB) ──────────────────────────────────
   local avail_kb
   avail_kb=$(df / 2>/dev/null | awk 'NR==2 {print $4}')
   if [[ -n "$avail_kb" && "$avail_kb" -ge 5242880 ]]; then
     local avail_hr
     avail_hr=$(numfmt --to=iec "$((avail_kb * 1024))" 2>/dev/null || echo "${avail_kb}KB")
-    check "Free disk (≥5GB)" ok "${avail_hr}"
+    check "Free disk (>=5GB)" ok "${avail_hr}"
   elif [[ -n "$avail_kb" ]]; then
     local avail_hr
     avail_hr=$(numfmt --to=iec "$((avail_kb * 1024))" 2>/dev/null || echo "${avail_kb}KB")
-    check "Free disk (≥5GB)" fail "${avail_hr} — too low"
+    check "Free disk (>=5GB)" fail "${avail_hr} — too low"
     errors+=("disk")
     fixes+=("Free up space — see 'docker system prune' or remove old LXD images")
   else
-    check "Free disk (≥5GB)" fail "could not determine"
+    check "Free disk (>=5GB)" fail "could not determine"
   fi
 
-  # ── 8. Python 3 ────────────────────────────────────────────
   if command -v python3 &>/dev/null; then
     local py_ver
     py_ver=$(python3 --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
@@ -464,7 +426,6 @@ cmd_prepare() {
 
   echo ""
 
-  # ── Summary ─────────────────────────────────────────────────
   if [ ${#errors[@]} -eq 0 ]; then
     echo "  ✅ All checks passed. Host is ready."
     return 0
@@ -479,25 +440,14 @@ cmd_prepare() {
       local err="${errors[$i]}"
       echo "  [$((i+1))/${#errors[@]}] Fixing: ${err}"
       if [[ "$fix" == apt\ install* ]]; then
-        # Run apt install with sudo detection
         if [[ $EUID -eq 0 ]]; then
+          apt-get update -qq 2>/dev/null || true
           eval "$fix -qq" 2>/dev/null || true
         else
+          sudo apt-get update -qq 2>/dev/null || true
           eval "sudo $fix -qq" 2>/dev/null || true
         fi
-      elif [[ "$fix" == snap\ install* ]]; then
-        if [[ $EUID -eq 0 ]]; then
-          eval "$fix" 2>/dev/null || true
-        else
-          eval "sudo $fix" 2>/dev/null || true
-        fi
-      elif [[ "$fix" == iptables* ]]; then
-        if [[ $EUID -eq 0 ]]; then
-          eval "$fix" 2>/dev/null || true
-        else
-          eval "sudo $fix" 2>/dev/null || true
-        fi
-      elif [[ "$fix" == fallocate* ]]; then
+      else
         if [[ $EUID -eq 0 ]]; then
           eval "$fix" 2>/dev/null || true
         else
@@ -510,7 +460,6 @@ cmd_prepare() {
     echo ""
     echo "  == Re-running checks..."
     echo ""
-    # Recursive call without --fix to show updated status
     cmd_prepare
     return $?
   else
@@ -529,10 +478,6 @@ cmd_prepare() {
     return 1
   fi
 }
-
-# ═══════════════════════════════════════════════════════════════════
-# DISPATCH
-# ═══════════════════════════════════════════════════════════════════
 
 load_env
 cmd="${1:-help}"; shift 2>/dev/null || true
