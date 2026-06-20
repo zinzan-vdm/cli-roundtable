@@ -11,20 +11,31 @@ Each agent is a **full Ubuntu 24.04 LXD system container** cloned from a `roundt
 **Architecture at a glance:**
 
 ```
-Host (VPS)
-├── wg-easy (Docker, 10.10.0.2) ── WireGuard tunnel ──┐
-│   Tunnel: :51820/udp  Dashboard: :51821 (VPN-only)  │
-├── LXD bridge (lxdbr0, 10.8.100.0/24 NAT) ──── Internet
-│                                                      │
-├── Agent "arthur" (roundtable-arthur)  ◄──────────────┘
-│   ├── Hermes gateway (:8642 API, :9119 dashboard)
-│   ├── VPN: 10.10.1.x (auto-provisioned wg-easy peer)
-│   └── Volume: .agents/arthur/volume/ → /opt/data
-│
-├── Agent "bob" (roundtable-bob)    ◄──────────────┘
-│   ├── Hermes gateway (:8642 API, :9119 dashboard)
-│   ├── VPN: 10.10.1.x (auto-provisioned wg-easy peer)
-│   └── Volume: .agents/bob/volume/ → /opt/data
+                                     +-----------------------------------------------------------------------+
+                                     | Server/Host                                                           |
+                                     |                                            +---------------------+    |
+                                     |                            +---------------|  agent-00           |    |
+                                     |                            |  VPN Peer     +---------------------+    |
+                                     |                            |  10.10.1.2    LXD Container              |
+                                     |                            |               eth → lxbr0 (internet)     |
+                                     |                            |               wg0 → 10.10.1.2 (VPN)      |
+                                     |                            |                                          |
+                                     |                            |                                          |
++--------------------+               |    +--------------------+  |               +---------------------+    |
+|  Admin             |---------------+----|  VPN               |--+---------------|  agent-01           |    |
++--------------------+  VPN Peer     |    +--------------------+  |  VPN Peer     +---------------------+    |
+Your local machine      10.10.1.1    |    Wireguard VPN Server    |  10.10.1.3    LXD Container              |
+                                     |    wg-easy                 |               eth → lxbr0 (internet)     |
+                                     |    Docker container        |               wg0 → 10.10.1.3 (VPN)      |
+                                     |    Mesh (10.10.1.0/24)     |                                          |
+                                     |    Mesh IP 10.10.1.0       |                                          |
+                                     |                            |               +---------------------+    |
+                                     |                            +---------------|  agent-XX           |    |
+                                     |                               VPN Peer     +---------------------+    |
+                                     |                               10.10.1.x    eth → lxbr0 (internet)     |
+                                     |                                            wg0 → 10.10.1.4 (VPN)      |
+                                     |                                                                       |
+                                     +-----------------------------------------------------------------------+
 ```
 
 Each agent has **two network paths**: the LXD bridge for outbound internet access (apt, API calls) and the WireGuard tunnel for VPN connectivity (agent-to-agent, admin access from your machine).
