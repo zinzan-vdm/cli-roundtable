@@ -204,7 +204,8 @@ cmd_agent_create() {
   echo "==> Launching agent '${name}' (${lxc_name})..." >&2
   lxc launch roundtable-agent "$lxc_name" \
     -c limits.memory="${AGENT_MEMORY}" \
-    -c limits.cpu="${AGENT_CPU}"
+    -c limits.cpu="${AGENT_CPU}" \
+    -c boot.autostart=true
 
   # Mount persistent volume for HERMES_HOME
   lxc config device add "$lxc_name" volume disk \

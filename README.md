@@ -153,6 +153,8 @@ roundtable agent delete <name>         # Destroy container + revoke WG peer
 
 Agent containers are **namespaced** — `agent create arthur` creates an LXC container named `roundtable-arthur`, so the LXD pool stays organised.
 
+Agent containers are configured with `boot.autostart=true` — they automatically resume after a host reboot. The Hermes gateway (if started with `gateway up`) is installed as a systemd service and restarts with the container.
+
 ---
 
 ## Configuration
