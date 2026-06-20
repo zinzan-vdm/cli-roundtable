@@ -517,6 +517,14 @@ cmd_check() {
     fixes+=("apt install -y wireguard-tools")
   fi
 
+  if host cloud-images.ubuntu.com &>/dev/null 2>&1; then
+    check "Ubuntu image (DNS)" ok "cloud-images.ubuntu.com resolvable"
+  else
+    check "Ubuntu image (DNS)" fail "cloud-images.ubuntu.com not resolvable"
+    errors+=("dns")
+    fixes+=("dns")
+  fi
+
   echo ""
 
   if [ ${#errors[@]} -eq 0 ]; then
@@ -540,6 +548,8 @@ cmd_check() {
           sudo apt-get update -qq 2>/dev/null || true
           eval "sudo $fix -qq" 2>/dev/null || true
         fi
+      elif [[ "$fix" == "dns" ]]; then
+        cmd_fix_dns
       else
         if [[ $EUID -eq 0 ]]; then
           eval "$fix" 2>/dev/null || true
@@ -569,6 +579,84 @@ cmd_check() {
     done
     echo ""
     return 1
+  fi
+}
+
+# ── DNS diagnostics ──────────────────────────────────────────────
+cmd_fix_dns() {
+  echo ""
+  echo "  DNS resolution for cloud-images.ubuntu.com failed."
+  echo "  This blocks LXD from downloading the golden image base."
+  echo ""
+
+  if ! command -v resolvectl &>/dev/null; then
+    echo "  systemd-resolved not active. Check /etc/resolv.conf manually."
+    return 1
+  fi
+
+  local link="eth0"
+  local status_output
+  status_output=$(resolvectl status "$link" 2>/dev/null)
+  local current_dns
+  current_dns=$(echo "$status_output" | grep "DNS Servers:" | head -1 | sed 's/.*DNS Servers: *//')
+  local primary_dns
+  primary_dns=$(echo "$status_output" | grep "Current DNS Server:" | awk '{print $NF}')
+
+  echo "  Interface: $link"
+  echo "  Primary:   $primary_dns"
+  echo "  All:       $current_dns"
+
+  local ipv4_servers=""
+  for ip in $current_dns; do
+    if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+      ipv4_servers="$ipv4_servers $ip"
+    fi
+  done
+  ipv4_servers="${ipv4_servers# }"
+
+  local suggested_dns=""
+  local suggestion_msg=""
+
+  if echo "$primary_dns" | grep -q ':'; then
+    suggestion_msg="Primary DNS is IPv6 ($primary_dns). Adding explicit IPv4 DNS resolves this in most cases."
+    if [[ -n "$ipv4_servers" ]]; then
+      suggested_dns="$ipv4_servers"
+      suggestion_msg+=" Detected IPv4 DNS: $suggested_dns"
+    else
+      suggested_dns="1.1.1.1 8.8.8.8"
+      suggestion_msg+=" No IPv4 DNS detected. Use public resolvers as fallback."
+    fi
+  else
+    suggestion_msg="DNS timeout. Restarting systemd-resolved may help first."
+    suggested_dns="1.1.1.1 8.8.8.8"
+  fi
+
+  echo "  Diagnosis: $suggestion_msg"
+  echo ""
+  echo "  Fix: Add \"DNS=$suggested_dns\" to /etc/systemd/resolved.conf"
+  echo ""
+  read -p "  Apply? [y/N] " -r response
+  echo ""
+
+  if [[ "$response" =~ ^[Yy]$ ]]; then
+    local dns_line="DNS=$suggested_dns"
+    if grep -q "^DNS=" /etc/systemd/resolved.conf 2>/dev/null; then
+      sed -i "s/^DNS=.*/$dns_line/" /etc/systemd/resolved.conf
+    else
+      echo "$dns_line" >> /etc/systemd/resolved.conf
+    fi
+    systemctl restart systemd-resolved 2>/dev/null || true
+
+    echo "  Restarting systemd-resolved..."
+    sleep 1
+    if host cloud-images.ubuntu.com &>/dev/null 2>&1; then
+      echo "  ✅ DNS resolution restored."
+    else
+      echo "  ❌ Still failing. Try: systemctl restart systemd-resolved"
+      echo "     Or check /etc/systemd/resolved.conf manually."
+    fi
+  else
+    echo "  Skipped. Try: systemctl restart systemd-resolved"
   fi
 }
 

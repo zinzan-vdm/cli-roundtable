@@ -60,6 +60,7 @@ Each agent has **two network paths**: the LXD bridge for outbound internet acces
 | **Swap** (≥1 GB) | — | `fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` |
 | **iptables rule** | — | `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT` |
 | **wireguard-tools** | — | `apt install -y wireguard-tools` |
+| **DNS resolution** | — | `cloud-images.ubuntu.com` must be resolvable (checked by `roundtable check`)
 | **Free disk** | ≥5 GB | — |
 
 > Tested on Ubuntu 26.04 / Linux 7.0.0-15 / Hetzner CX22 (4 GB RAM, 2 vCPU, ~21 GB free). LXD 6.8, Docker 29.1.3, Compose 2.40.3.
@@ -125,7 +126,7 @@ roundtable wg peer new admin  # creates and prints a config you can import in yo
 ### `check` — Host readiness
 
 ```bash
-roundtable check                # Check all prerequisites
+roundtable check                # Check all prerequisites (Docker, LXD, DNS, iptables, etc.)
 roundtable check --fix          # Auto-install missing prerequisites
 ```
 
@@ -319,6 +320,7 @@ Everything under our control is pinned to specific versions for reproducible bui
 | `$` in .env password gets eaten by shell | Shell variable expansion | Single-quote the value, or escape `$` |
 | `check` swap threshold | `swapon --show --bytes` returns usable space minus swap header (4096 bytes less) | Threshold lowered to ≥1,000,000,000 bytes (≈953 MiB) |
 | `check` iptables false negative | `iptables -L` without `-v` doesn't show interface columns | Added `-v` flag so `-i lxdbr0` rules match |
+| Golden image build fails with DNS timeout | systemd-resolved prefers IPv6 DNS over IPv4 | Run `check --fix` to diagnose and apply IPv4 DNS config |
 
 ---
 
