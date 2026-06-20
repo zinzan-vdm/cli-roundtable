@@ -184,6 +184,7 @@ Agent containers are configured with `boot.autostart=true` — they automaticall
 | `WG_SUBNET` | `10.10.0.0/24` | — | Docker bridge subnet for wg-easy container |
 | `WG_HOST_IP` | `10.10.0.254` | — | Static IP for wg-easy on the Docker bridge |
 | `WG_POOL_ADDRESS` | `10.10.1.x` | — | WireGuard peer address pool template |
+| `WG_PORT` | `51820` | — | WireGuard tunnel port (public UDP) |
 | `WG_ALLOWED_IPS` | `10.10.0.0/16` | — | Allowed IPs for the WireGuard tunnel |
 | `AGENT_MEMORY` | `768MB` | — | Per-agent RAM limit (LXD cgroup) |
 | `AGENT_CPU` | `1` | — | Per-agent vCPU limit |
@@ -216,7 +217,7 @@ The IP layout is fully configurable via `.env` variables. Defaults shown below:
 
 | Port | Service | Visibility |
 |------|---------|------------|
-| `51820/udp` | WireGuard tunnel | Public (incoming) |
+| `51820/udp` | WireGuard tunnel | Public (incoming, configurable via `WG_PORT`) |
 | `51821` | wg-easy dashboard | Internal only (`WG_HOST_IP:51821`) |
 | `8642` | Hermes API server (per agent) | Agent loopback only |
 | `9119` | Hermes dashboard (per agent) | Agent loopback only |
@@ -229,7 +230,7 @@ The IP layout is fully configurable via `.env` variables. Defaults shown below:
   iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT
   ```
   Without this, LXD containers can't reach the internet (packages, Hermes install, API calls).
-- The host firewall should expose `51820/udp`. Everything else stays internal.
+- The host firewall should expose `51820/udp` (or your `WG_PORT` override). Everything else stays internal.
 - wg-easy dashboard (`51821`) is **not** port-mapped to the host — access it via WireGuard tunnel.
 
 ### Agent connectivity
@@ -299,6 +300,7 @@ Everything under our control is pinned to specific versions for reproducible bui
 | What's pinned | Where | How to upgrade |
 |--------------|-------|----------------|
 | wg-easy Docker image | `WG_EASY_VERSION` in `.env` | Set `WG_EASY_VERSION=15` (or whichever) |
+| WireGuard tunnel port | `WG_PORT` in `.env` | Set `WG_PORT=51821` |
 | Ubuntu base image | `UBUNTU_IMAGE` in `.env` | Set `UBUNTU_IMAGE=ubuntu:22.04` |
 | wireguard-tools, curl, ca-certificates | Apt version pins in `roundtable` script | Set `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` in `.env` |
 | Hermes Agent | CLI argument | `golden-image build v2026.6.1` |
