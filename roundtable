@@ -372,7 +372,7 @@ for p in peers:
   echo "Agent '${name}' deleted." >&2
 }
 
-cmd_prepare() {
+cmd_check() {
   local force=false
   [[ "${1:-}" == "--fix" ]] && force=true
 
@@ -553,7 +553,7 @@ cmd_prepare() {
     echo ""
     echo "  == Re-running checks..."
     echo ""
-    cmd_prepare
+    cmd_check
     return $?
   else
     echo "  ❌ ${#errors[@]} issue(s) found. To auto-fix:"
@@ -579,6 +579,6 @@ case "$cmd" in
   wg)          cmd_wg "$@" ;;
   golden-image) cmd_golden_image "$@" ;;
   agent)       cmd_agent "$@" ;;
-  check|prepare|doctor|ready) cmd_prepare "$@" ;;
+  check)       cmd_check "$@" ;;
   help|*)      usage ;;
 esac
