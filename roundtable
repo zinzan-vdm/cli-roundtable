@@ -289,8 +289,23 @@ cmd_agent_delete() {
   echo "Removing agent '${name}' (${lxc_name})..." >&2
 
   wg_auth 2>/dev/null || true
-  [[ -n "$WG_PASSWORD" ]] && \
-    curl -sf -X DELETE -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${name}" -o /dev/null 2>/dev/null || true
+  if [[ -n "$WG_PASSWORD" ]]; then
+    # wg-easy v14+ uses UUID for API paths, not name
+    local all_peers
+    all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+    local peer_id
+    peer_id=$(echo "$all_peers" | python3 -c "
+import json,sys
+peers=json.load(sys.stdin)
+for p in peers:
+    if p.get('name') == '$name':
+        print(p.get('id',''))
+        break
+" 2>/dev/null || true)
+    if [[ -n "$peer_id" ]]; then
+      curl -sf -X DELETE -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}" -o /dev/null 2>/dev/null || true
+    fi
+  fi
 
   lxc stop "$lxc_name" 2>/dev/null || true
   lxc delete "$lxc_name" 2>/dev/null || true
