@@ -291,9 +291,9 @@ Everything under our control is pinned to specific versions for reproducible bui
 | LXD containers have no network | Docker's `DOCKER-USER` chain drops forwarded packets | Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` (or run `prepare --fix`) |
 | Golden image build OOM on 4 GB hosts | `unsquashfs` during image publish spikes memory | Create swap: `fallocate -l 1G /swapfile && mkswap && swapon` |
 | Docker snap can't see `/opt` | Snap confinement | Install via `apt install docker.io` instead |
-| wg-easy v14 API returns 404 for peer config | v14 uses UUID paths, not name-based | Set `WG_EASY_VERSION=14` (pinned). The script resolves UUID automatically |
 | `$` in .env password gets eaten by shell | Shell variable expansion | Single-quote the value, or escape `$` |
-| Agent delete not cleaning WireGuard peers | Also uses name-based URL (same UUID issue) | Manually delete via wg-easy dashboard, or `curl` with resolved UUID |
+| `prepare` swap check too strict | `swapon --show --bytes` returns usable space minus swap header (4096 bytes less) | Threshold lowered to ≥1,000,000,000 bytes (≈953 MiB) — less than 1 GiB swap is too small regardless |
+| `prepare` iptables check false negative | `iptables -L` without `-v` doesn't show interface columns | Added `-v` flag so `-i lxdbr0` rules match |
 
 ---
 
