@@ -313,7 +313,6 @@ Everything under our control is pinned to specific versions for reproducible bui
 ```
 cli-roundtable/
   roundtable        # Main CLI (bash, ~500 lines)
-  peers             # Standalone WireGuard peer manager (bash, ~115 lines)
   compose.yml       # wg-easy Docker Compose config
   .env.example      # Configuration template
   .env              # Your config (gitignored)
