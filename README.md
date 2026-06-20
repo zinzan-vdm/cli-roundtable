@@ -85,7 +85,10 @@ sudo ./roundtable agent start arthur
 # 6. Setup Hermes inside the agent
 sudo ./roundtable agent setup arthur
 
-# 7. Create a WireGuard config for your local machine
+# 7. Start the Hermes gateway (API + dashboard)
+sudo ./roundtable agent gateway up arthur
+
+# 8. Create a WireGuard config for your local machine
 roundtable wg peer new admin  # creates and prints a config you can import in your WireGuard client
 ```
 
@@ -97,6 +100,7 @@ roundtable wg peer new admin  # creates and prints a config you can import in yo
 | `golden-image build vX` | Launches LXD temp container, installs Hermes, publishes image | ~3–4 min |
 | `agent create arthur` | Clones golden image → LXC container, creates WG peer, writes config | ~1 min |
 | `agent setup arthur` | Runs `hermes setup --run-as-user root` inside container | ~30s |
+| `agent gateway up arthur` | Installs systemd service + starts Hermes gateway | ~10s |
 
 ---
 
@@ -142,10 +146,14 @@ roundtable agent restart <name>        # Restart container
 roundtable agent shell <name>          # Open root shell
 roundtable agent logs <name>           # Follow container journal
 roundtable agent setup <name>          # Run hermes setup inside container
+roundtable agent gateway up <name>     # Start Hermes gateway (persists across restarts)
+roundtable agent gateway down <name>   # Stop Hermes gateway
 roundtable agent delete <name>         # Destroy container + revoke WG peer
 ```
 
 Agent containers are **namespaced** — `agent create arthur` creates an LXC container named `roundtable-arthur`, so the LXD pool stays organised.
+
+Agent containers are configured with `boot.autostart=true` — they automatically resume after a host reboot. The Hermes gateway (if started with `gateway up`) is installed as a systemd service and restarts with the container.
 
 ---
 

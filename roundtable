@@ -15,6 +15,7 @@
 #   agent start|stop|restart|shell <name>     Agent lifecycle
 #   agent logs <name>                         Follow agent journal
 #   agent setup <name>                        Run hermes setup
+#   agent gateway up|down <name>              Start/stop the Hermes gateway
 #   agent delete <name>                       Destroy agent + revoke peer
 #   prepare|doctor|ready [--fix]            Check host readiness (auto-fix with --fix)
 
@@ -182,6 +183,7 @@ cmd_agent() {
       lxc exec "$lxc_name" -- journalctl -u "hermes*" -f 2>/dev/null || lxc exec "$lxc_name" -- journalctl -f ;;
     setup)
       lxc exec "$(agent_lxc_name "${1:?Usage: roundtable agent setup <name>}")" -- hermes setup ;;
+    gateway) cmd_agent_gateway "$@" ;;
     delete)  cmd_agent_delete "$@" ;;
     *)       usage ;;
   esac
@@ -202,7 +204,8 @@ cmd_agent_create() {
   echo "==> Launching agent '${name}' (${lxc_name})..." >&2
   lxc launch roundtable-agent "$lxc_name" \
     -c limits.memory="${AGENT_MEMORY}" \
-    -c limits.cpu="${AGENT_CPU}"
+    -c limits.cpu="${AGENT_CPU}" \
+    -c boot.autostart=true
 
   # Mount persistent volume for HERMES_HOME
   lxc config device add "$lxc_name" volume disk \
@@ -252,6 +255,34 @@ for p in peers:
   echo "  Shell:     roundtable agent shell ${name}" >&2
   echo "  Setup:     roundtable agent setup ${name}" >&2
   lxc list -c n,s,4 "$lxc_name"
+}
+
+cmd_agent_gateway() {
+  local action="${1:?Usage: roundtable agent gateway up|down <name>}"
+  local name="${2:?Usage: roundtable agent gateway up|down <name>}"
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
+
+  case "$action" in
+    up)
+      echo "==> Installing gateway service for '${name}'..." >&2
+      lxc exec "$lxc_name" -- hermes gateway install --accept-hooks 2>/dev/null || true
+      echo "==> Starting gateway..." >&2
+      lxc exec "$lxc_name" -- hermes gateway start 2>/dev/null || true
+      # Enable so it survives container restart
+      lxc exec "$lxc_name" -- bash -c "systemctl enable hermes-gateway-*.service 2>/dev/null" || true
+      echo "Gateway started for '${name}'." >&2
+      lxc exec "$lxc_name" -- hermes gateway status 2>/dev/null || true
+      ;;
+    down)
+      echo "==> Stopping gateway for '${name}'..." >&2
+      lxc exec "$lxc_name" -- hermes gateway stop 2>/dev/null || true
+      echo "Gateway stopped for '${name}'." >&2
+      ;;
+    *)
+      echo "Usage: roundtable agent gateway up|down <name>" >&2
+      return 1
+      ;;
+  esac
 }
 
 cmd_agent_delete() {
