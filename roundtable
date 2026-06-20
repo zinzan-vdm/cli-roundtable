@@ -95,7 +95,20 @@ for p in json.load(sys.stdin):
       ;;
     config)
       local name="${1:?Usage: roundtable wg peer config <name>}"
-      local config; config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${name}/configuration" 2>/dev/null)
+      local all_peers
+      all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+      local peer_id
+      peer_id=$(echo "$all_peers" | python3 -c "
+import json,sys
+peers=json.load(sys.stdin)
+for p in peers:
+    if p.get('name') == '$name':
+        print(p.get('id',''))
+        break
+" 2>/dev/null || true)
+      [[ -n "$peer_id" ]] || { echo "Peer '${name}' not found." >&2; exit 1; }
+      local config
+      config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}/configuration" 2>/dev/null)
       [[ -n "$config" ]] || { echo "Peer '${name}' not found." >&2; exit 1; }
       echo "$config"
       ;;
