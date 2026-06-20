@@ -264,18 +264,15 @@ cmd_agent_gateway() {
 
   case "$action" in
     up)
-      echo "==> Installing gateway service for '${name}'..." >&2
-      lxc exec "$lxc_name" -- hermes gateway install --accept-hooks 2>/dev/null || true
-      echo "==> Starting gateway..." >&2
-      lxc exec "$lxc_name" -- hermes gateway start 2>/dev/null || true
-      # Enable so it survives container restart
-      lxc exec "$lxc_name" -- bash -c "systemctl enable hermes-gateway-*.service 2>/dev/null" || true
+      echo "==> Installing and starting gateway for '${name}'..." >&2
+      # Install creates user systemd service, enables it, and starts it
+      lxc exec "$lxc_name" -- bash -c "printf 'Y\nY\n' | hermes gateway --accept-hooks install"
       echo "Gateway started for '${name}'." >&2
-      lxc exec "$lxc_name" -- hermes gateway status 2>/dev/null || true
+      lxc exec "$lxc_name" -- hermes gateway status
       ;;
     down)
       echo "==> Stopping gateway for '${name}'..." >&2
-      lxc exec "$lxc_name" -- hermes gateway stop 2>/dev/null || true
+      lxc exec "$lxc_name" -- hermes gateway stop
       echo "Gateway stopped for '${name}'." >&2
       ;;
     *)
@@ -292,8 +289,23 @@ cmd_agent_delete() {
   echo "Removing agent '${name}' (${lxc_name})..." >&2
 
   wg_auth 2>/dev/null || true
-  [[ -n "$WG_PASSWORD" ]] && \
-    curl -sf -X DELETE -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${name}" -o /dev/null 2>/dev/null || true
+  if [[ -n "$WG_PASSWORD" ]]; then
+    # wg-easy v14+ uses UUID for API paths, not name
+    local all_peers
+    all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+    local peer_id
+    peer_id=$(echo "$all_peers" | python3 -c "
+import json,sys
+peers=json.load(sys.stdin)
+for p in peers:
+    if p.get('name') == '$name':
+        print(p.get('id',''))
+        break
+" 2>/dev/null || true)
+    if [[ -n "$peer_id" ]]; then
+      curl -sf -X DELETE -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}" -o /dev/null 2>/dev/null || true
+    fi
+  fi
 
   lxc stop "$lxc_name" 2>/dev/null || true
   lxc delete "$lxc_name" 2>/dev/null || true
@@ -395,7 +407,7 @@ cmd_prepare() {
   fi
 
   # ── 5. iptables rules (DOCKER-USER + lxdbr0) ───────────────
-  if iptables -L DOCKER-USER -n 2>/dev/null | grep -q "lxdbr0"; then
+  if iptables -L DOCKER-USER -n -v 2>/dev/null | grep -q "lxdbr0"; then
     check "iptables (DOCKER-USER)" ok "lxdbr0 FORWARD accepted"
   else
     check "iptables (DOCKER-USER)" fail "lxdbr0 not in DOCKER-USER chain"
@@ -406,7 +418,7 @@ cmd_prepare() {
   # ── 6. Swap (≥1GB) ────────────────────────────────────────
   local swap_total
   swap_total=$(swapon --show=size --noheadings --bytes 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s}')
-  if [[ -n "$swap_total" && "$swap_total" -ge 1073741824 ]]; then
+  if [[ -n "$swap_total" && "$swap_total" -ge 1000000000 ]]; then
     local swap_hr
     swap_hr=$(numfmt --to=iec "$swap_total" 2>/dev/null || echo "${swap_total}B")
     check "Swap (≥1GB)" ok "${swap_hr}"
