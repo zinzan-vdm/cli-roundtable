@@ -9,19 +9,23 @@ All tests assume a functioning cli-roundtable cluster:
 - Golden image built (`roundtable golden-image build v2026.5.29.2`)
 - A test agent exists, started, and set up (`agent create`, `agent start`, `agent setup`)
 
+The `agent gateway up|down` command manages the **Hermes messaging gateway** — a user systemd service that connects the agent to messaging platforms (Discord, Telegram, etc.). It is **not** the same as `hermes dashboard` (port 9119) or an API server — those are separate commands.
+
 One-time: create the test agent:
 
 ```bash
 sudo ./roundtable agent create test-gw
 sudo ./roundtable agent start test-gw
 sudo ./roundtable agent setup test-gw
+# Set an API key inside the container so the gateway can start:
+lxc exec roundtable-test-gw -- sed -i 's/^# OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=your-key/' /root/.hermes/.env
 ```
 
 ---
 
 ## Phase 1 — Gateway up
 
-**Goal:** Verify `agent gateway up` installs, starts, and enables the gateway.
+**Goal:** Verify `agent gateway up` installs, starts, and enables the messaging gateway.
 
 ### Prep
 
@@ -29,12 +33,6 @@ Ensure agent is running:
 
 ```bash
 sudo ./roundtable agent list | grep test-gw
-```
-
-Verify gateway is NOT already running (should fail or show inactive):
-
-```bash
-sudo ./roundtable agent gateway up test-gw 2>&1 || true
 ```
 
 ### Run
@@ -46,21 +44,17 @@ sudo ./roundtable agent gateway up test-gw
 ### Verify
 
 ```bash
-# 1. Gateway systemd unit exists and is enabled
-lxc exec roundtable-test-gw -- systemctl is-enabled hermes-gateway-*.service
-
-# 2. Service is active (running)
-lxc exec roundtable-test-gw -- systemctl is-active hermes-gateway-*.service
-
-# 3. Hermes API responds on :8642
-lxc exec roundtable-test-gw -- curl -sf http://127.0.0.1:8642/health 2>/dev/null || \
-lxc exec roundtable-test-gw -- curl -sf http://127.0.0.1:8642 2>/dev/null || echo "check endpoint"
-
-# 4. Hermes dashboard responds on :9119
-lxc exec roundtable-test-gw -- curl -sf -o /dev/null http://127.0.0.1:9119 && echo "dashboard ok"
-
-# 5. Gateway status via hermes CLI
+# 1. Gateway status via hermes CLI — shows loaded, enabled, running
 lxc exec roundtable-test-gw -- hermes gateway status
+
+# 2. User systemd unit exists and is enabled (check via file)
+lxc exec roundtable-test-gw -- ls -la /root/.config/systemd/user/default.target.wants/hermes-gateway.service
+
+# 3. Process is running
+lxc exec roundtable-test-gw -- ps aux | grep 'hermes.*gateway' | grep -v grep
+
+# 4. Systemd linger is enabled (survives logout/reboot)
+lxc exec roundtable-test-gw -- loginctl show-user root | grep Linger
 ```
 
 ### Clean
@@ -87,7 +81,7 @@ sudo ./roundtable agent gateway up test-gw
 
 - Command exits cleanly (no errors)
 - Gateway still running (check via `hermes gateway status`)
-- No duplicate systemd units or port conflicts
+- Journal log shows it detected existing service (no duplicate installs)
 
 ### Clean
 
@@ -112,14 +106,11 @@ sudo ./roundtable agent gateway down test-gw
 ### Verify
 
 ```bash
-# 1. Service is stopped
-lxc exec roundtable-test-gw -- systemctl is-active hermes-gateway-*.service 2>/dev/null || echo "inactive (expected)"
+# 1. Gateway status shows not running
+lxc exec roundtable-test-gw -- hermes gateway status | head -5
 
-# 2. API endpoint no longer responds
-lxc exec roundtable-test-gw -- curl -sf --connect-timeout 3 http://127.0.0.1:8642 2>/dev/null && echo "UNEXPECTED" || echo "API down (expected)"
-
-# 3. Dashboard no longer responds
-lxc exec roundtable-test-gw -- curl -sf --connect-timeout 3 http://127.0.0.1:9119 2>/dev/null && echo "UNEXPECTED" || echo "dashboard down (expected)"
+# 2. Process is gone
+lxc exec roundtable-test-gw -- ps aux | grep 'hermes.*gateway' | grep -v grep || echo "no process (expected)"
 ```
 
 ### Clean
@@ -159,7 +150,7 @@ sudo ./roundtable agent gateway up test-gw
 
 ## Phase 5 — Persistence across container restart
 
-**Goal:** Gateway survives an agent container restart.
+**Goal:** Gateway survives an agent container restart via user systemd service + linger.
 
 ### Prep
 
@@ -170,7 +161,7 @@ Gateway running from Phase 4 clean step.
 ```bash
 sudo ./roundtable agent restart test-gw
 # Wait for container to fully boot
-sleep 10
+sleep 15
 ```
 
 ### Verify
@@ -179,14 +170,11 @@ sleep 10
 # 1. Container is running
 sudo ./roundtable agent list | grep test-gw | grep -i running
 
-# 2. Gateway service auto-started
-lxc exec roundtable-test-gw -- systemctl is-active hermes-gateway-*.service
+# 2. Gateway status shows it auto-started
+lxc exec roundtable-test-gw -- hermes gateway status | head -10
 
-# 3. API endpoint responds
-lxc exec roundtable-test-gw -- curl -sf http://127.0.0.1:8642 2>/dev/null && echo "API ok"
-
-# 4. Dashboard responds
-lxc exec roundtable-test-gw -- curl -sf -o /dev/null http://127.0.0.1:9119 && echo "dashboard ok"
+# 3. Journal shows service started after boot
+lxc exec roundtable-test-gw -- journalctl --user -u hermes-gateway --no-pager -n 5
 ```
 
 ### Clean
