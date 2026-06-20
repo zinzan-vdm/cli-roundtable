@@ -264,18 +264,15 @@ cmd_agent_gateway() {
 
   case "$action" in
     up)
-      echo "==> Installing gateway service for '${name}'..." >&2
-      lxc exec "$lxc_name" -- hermes gateway install --accept-hooks 2>/dev/null || true
-      echo "==> Starting gateway..." >&2
-      lxc exec "$lxc_name" -- hermes gateway start 2>/dev/null || true
-      # Enable so it survives container restart
-      lxc exec "$lxc_name" -- bash -c "systemctl enable hermes-gateway-*.service 2>/dev/null" || true
+      echo "==> Installing and starting gateway for '${name}'..." >&2
+      # Install creates user systemd service, enables it, and starts it
+      lxc exec "$lxc_name" -- bash -c "printf 'Y\nY\n' | hermes gateway --accept-hooks install"
       echo "Gateway started for '${name}'." >&2
-      lxc exec "$lxc_name" -- hermes gateway status 2>/dev/null || true
+      lxc exec "$lxc_name" -- hermes gateway status
       ;;
     down)
       echo "==> Stopping gateway for '${name}'..." >&2
-      lxc exec "$lxc_name" -- hermes gateway stop 2>/dev/null || true
+      lxc exec "$lxc_name" -- hermes gateway stop
       echo "Gateway stopped for '${name}'." >&2
       ;;
     *)
