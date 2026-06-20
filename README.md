@@ -43,7 +43,7 @@ Each agent has **two network paths**: the LXD bridge for outbound internet acces
 **Key design decisions:**
 
 - **Agents are orchestrators, not runners.** LLM inference happens on OpenRouter's GPUs — agents orchestrate tool calls (browsers, Python scripts) and relay API calls.
-- **VPN-only access.** The wg-easy dashboard is bound to an internal Docker IP (10.10.0.2:51821), not exposed publicly. Agents connect via WireGuard.
+- **VPN-only access.** The wg-easy dashboard is bound to an internal Docker IP (`${WG_HOST_IP:-10.10.0.254}:51821`), not exposed publicly. Agents connect via WireGuard.
 - **Golden image pattern.** Build once (~1.4 GB), clone many (~30s each). The image bakes in Hermes Agent, Node.js 22, Python 3.11, Playwright Chromium, ffmpeg, and wireguard-tools.
 - **Dir storage.** LXD uses `dir` backend (no CoW), so each clone takes ~1.4 GB on disk. Simple, reliable, no kernel module dependencies.
 
@@ -175,6 +175,10 @@ Agent containers are configured with `boot.autostart=true` — they automaticall
 | `WG_HOST` | — | ✅ | VPS IP or domain (wg-easy endpoint) |
 | `WG_PASSWORD` | — | ✅ | Plaintext password for wg-easy API calls |
 | `WG_PASSWORD_HASH` | — | ✅ | bcrypt hash of password (wg-easy v14+) |
+| `WG_SUBNET` | `10.10.0.0/24` | — | Docker bridge subnet for wg-easy container |
+| `WG_HOST_IP` | `10.10.0.254` | — | Static IP for wg-easy on the Docker bridge |
+| `WG_POOL_ADDRESS` | `10.10.1.x` | — | WireGuard peer address pool template |
+| `WG_ALLOWED_IPS` | `10.10.0.0/16` | — | Allowed IPs for the WireGuard tunnel |
 | `AGENT_MEMORY` | `768MB` | — | Per-agent RAM limit (LXD cgroup) |
 | `AGENT_CPU` | `1` | — | Per-agent vCPU limit |
 | `WG_EASY_VERSION` | `14` | — | wg-easy Docker image tag |
@@ -192,22 +196,22 @@ wg-easy v14 dropped plaintext `PASSWORD` in favour of `PASSWORD_HASH`. The compo
 
 ## Network design
 
-### IP layout
+The IP layout is fully configurable via `.env` variables. Defaults shown below:
 
-| Network | Subnet | Purpose |
-|---------|--------|---------|
-| Docker bridge | `10.10.0.0/24` | wg-easy container and host communication |
-| wg-easy static IP | `10.10.0.2` | wg-easy container (not 10.10.0.1 — Docker gateway) |
-| WireGuard pool | `10.10.1.x` | Per-agent VPN addresses, assigned by wg-easy |
+| Network | Default Subnet | Purpose |
+|---------|---------------|---------|
+| Docker bridge | `WG_SUBNET` → `10.10.0.0/24` | wg-easy container and host communication |
+| wg-easy static IP | `WG_HOST_IP` → `10.10.0.254` | wg-easy container (not `.1` — Docker gateway) |
+| WireGuard pool | `WG_POOL_ADDRESS` → `10.10.1.x` | Per-agent VPN addresses, assigned by wg-easy |
 | LXD bridge | `10.8.100.0/24` | LXD containers (NAT to host, outbound only) |
-| Docker gateway | `10.10.0.1` | Docker bridge gateway (unused by wg-easy) |
+| Docker gateway | `WG_SUBNET .1` → `10.10.0.1` | Docker bridge gateway (unused by wg-easy) |
 
 ### Ports
 
 | Port | Service | Visibility |
 |------|---------|------------|
 | `51820/udp` | WireGuard tunnel | Public (incoming) |
-| `51821` | wg-easy dashboard | Internal only (`10.10.0.2:51821`) |
+| `51821` | wg-easy dashboard | Internal only (`WG_HOST_IP:51821`) |
 | `8642` | Hermes API server (per agent) | Agent loopback only |
 | `9119` | Hermes dashboard (per agent) | Agent loopback only |
 
@@ -224,7 +228,7 @@ wg-easy v14 dropped plaintext `PASSWORD` in favour of `PASSWORD_HASH`. The compo
 
 ### Agent connectivity
 
-Each agent gets a WireGuard peer on `10.10.1.x` via wg-easy. The config is written into the container at `/etc/wireguard/wg0.conf` and activated with `wg-quick up wg0`. This means:
+Each agent gets a WireGuard peer on the pool (`WG_POOL_ADDRESS` → default `10.10.1.x`) via wg-easy. The config is written into the container at `/etc/wireguard/wg0.conf` and activated with `wg-quick up wg0`. This means:
 
 - Agents can reach each other over WireGuard
 - Your local machine can reach all agents by connecting to the same wg-easy server

@@ -26,7 +26,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOTENV="${ROOT}/.env"
 AGENTS_DIR="${ROOT}/.agents"
 COMPOSE_FILE="${ROOT}/compose.yml"
-WG_API="http://10.10.0.2:51821"
 COOKIE_JAR=$(mktemp /tmp/roundtable-cookies.XXXXXX)
 trap 'rm -f "$COOKIE_JAR"' EXIT
 
@@ -39,6 +38,9 @@ load_env() {
   WG_TOOLS_VER="${WG_TOOLS_VER:-1.0.20210914-1ubuntu4}"
   CURL_VER="${CURL_VER:-8.5.0-2ubuntu10.9}"
   CA_CERT_VER="${CA_CERT_VER:-20240203}"
+  WG_HOST_IP="${WG_HOST_IP:-10.10.0.254}"
+  WG_API="http://${WG_HOST_IP}:51821"
+  WG_POOL_ADDRESS="${WG_POOL_ADDRESS:-10.10.1.x}"
 }
 
 wg_auth() {
@@ -228,7 +230,7 @@ for p in peers:
   fi
 
   echo "==> Agent '${name}' ready." >&2
-  echo "  Dashboard: http://10.10.1.x:9119  (check IP: roundtable wg peer list)" >&2
+  echo "  Dashboard: http://${WG_POOL_ADDRESS}:9119  (check IP: roundtable wg peer list)" >&2
   echo "  Shell:     roundtable agent shell ${name}" >&2
   echo "  Setup:     roundtable agent setup ${name}" >&2
   lxc list -c n,s,4 "$lxc_name"
