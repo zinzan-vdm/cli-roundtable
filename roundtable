@@ -9,6 +9,7 @@ usage() {
   printf "  %-42s %s\n" "wg peer new <name>" "Create WireGuard peer"
   printf "  %-42s %s\n" "wg peer list" "List peers"
   printf "  %-42s %s\n" "wg peer config <name>" "Print peer config"
+  printf "  %-42s %s\n" "wg host up|down|ip" "Manage host's WireGuard tunnel"
   printf "  %-42s %s\n" "golden-image build <version>" "Build golden image"
   printf "  %-42s %s\n" "golden-image rebuild <version>" "Rebuild golden image"
   printf "  %-42s %s\n" "agent list" "List agents"
@@ -18,7 +19,7 @@ usage() {
   printf "  %-42s %s\n" "agent setup <name>" "Run hermes setup"
   printf "  %-42s %s\n" "agent gateway up|down <name>" "Start/stop the Hermes gateway"
   printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + revoke peer"
-  printf "  %-42s %s\n" "prepare|doctor|ready [--fix]" "Check host readiness (auto-fix with --fix)"
+  printf "  %-42s %s\n" "check [--fix]" "Check host readiness (auto-fix with --fix)"
   exit 0
 }
 
@@ -61,6 +62,7 @@ cmd_wg() {
     down)  docker compose -f "$COMPOSE_FILE" down ;;
     logs)  exec docker compose -f "$COMPOSE_FILE" logs -f wg-easy ;;
     peer)  cmd_wg_peer "$@" ;;
+    host)  cmd_wg_host "$@" ;;
     *)     usage ;;
   esac
 }
@@ -98,6 +100,85 @@ for p in json.load(sys.stdin):
       echo "$config"
       ;;
     *) usage ;;
+  esac
+}
+
+cmd_wg_host() {
+  local action="${1:-}"
+  shift 2>/dev/null || true
+  local host_peer="host-vps"
+  local wg_conf="/etc/wireguard/wg-host.conf"
+
+  case "$action" in
+    up)
+      command -v wg &>/dev/null || { echo "wireguard-tools not installed. Run: sudo ./roundtable check --fix" >&2; exit 1; }
+      wg_auth
+
+      # Create or update the host peer via wg-easy API
+      local existing
+      existing=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+      if ! echo "$existing" | grep -q "\"name\":\"${host_peer}\""; then
+        echo "Creating peer '${host_peer}'..." >&2
+        curl -sf -X POST "${WG_API}/api/wireguard/client" \
+          -H "Content-Type: application/json" -b "$COOKIE_JAR" \
+          -d "{\"name\":\"${host_peer}\"}" -o /dev/null
+      fi
+
+      # Fetch config by ID
+      local all_peers
+      all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
+      local peer_id
+      peer_id=$(echo "$all_peers" | python3 -c "
+import json,sys
+peers=json.load(sys.stdin)
+for p in peers:
+    if p.get('name') == '${host_peer}':
+        print(p.get('id',''))
+        break
+" 2>/dev/null || true)
+
+      if [[ -z "$peer_id" ]]; then
+        echo "Error: could not find peer '${host_peer}' after creation." >&2
+        exit 1
+      fi
+
+      local config
+      config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}/configuration" 2>/dev/null || true)
+      if [[ -z "$config" ]]; then
+        echo "Error: could not fetch config for '${host_peer}'." >&2
+        exit 1
+      fi
+
+      echo "$config" > "$wg_conf"
+      local host_ip
+      host_ip=$(echo "$config" | grep Address | awk '{print $3}' | cut -d/ -f1)
+      echo "Host WireGuard interface is up." >&2
+      echo "  Mesh IP: ${host_ip}" >&2
+      systemctl enable wg-quick@wg-host 2>/dev/null || true
+      wg-quick up wg-host 2>/dev/null || { echo "Failed to bring up wg-host." >&2; exit 1; }
+      echo "  Config:  ${wg_conf}" >&2
+      echo "  Service: wg-quick@wg-host (enabled)" >&2
+      ;;
+    down)
+      echo "Bringing down host WireGuard tunnel..." >&2
+      wg-quick down wg-host 2>/dev/null || true
+      systemctl disable wg-quick@wg-host 2>/dev/null || true
+      echo "Host WireGuard tunnel is down." >&2
+      ;;
+    ip)
+      local host_ip
+      host_ip=$(cat "$wg_conf" 2>/dev/null | grep Address | awk '{print $3}' | cut -d/ -f1)
+      if [[ -n "$host_ip" ]]; then
+        echo "$host_ip"
+      else
+        echo "Host WireGuard not configured. Run: sudo ./roundtable wg host up" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Usage: roundtable wg host up|down|ip" >&2
+      return 1
+      ;;
   esac
 }
 
@@ -426,6 +507,16 @@ cmd_prepare() {
     fixes+=("apt install -y python3")
   fi
 
+  if command -v wg &>/dev/null; then
+    local wg_ver
+    wg_ver=$(wg --version 2>/dev/null | head -1 || echo "installed")
+    check "wireguard-tools (wg)" ok "${wg_ver}"
+  else
+    check "wireguard-tools (wg)" fail "not found"
+    errors+=("wireguard-tools")
+    fixes+=("apt install -y wireguard-tools")
+  fi
+
   echo ""
 
   if [ ${#errors[@]} -eq 0 ]; then
@@ -467,7 +558,7 @@ cmd_prepare() {
   else
     echo "  ❌ ${#errors[@]} issue(s) found. To auto-fix:"
     echo ""
-    echo "    sudo ./roundtable prepare --fix"
+    echo "    sudo ./roundtable check --fix"
     echo ""
     echo "  Or fix manually:"
     echo ""
@@ -488,6 +579,6 @@ case "$cmd" in
   wg)          cmd_wg "$@" ;;
   golden-image) cmd_golden_image "$@" ;;
   agent)       cmd_agent "$@" ;;
-  prepare|doctor|ready) cmd_prepare "$@" ;;
+  check|prepare|doctor|ready) cmd_prepare "$@" ;;
   help|*)      usage ;;
 esac
