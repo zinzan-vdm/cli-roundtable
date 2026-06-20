@@ -8,23 +8,26 @@
 
 Each agent is a **full Ubuntu 24.04 LXD system container** cloned from a `roundtable-agent` golden image. The golden image is built once with Hermes Agent pre-installed — every agent is an identical clone with its own persistent volume.
 
+**Architecture at a glance:**
+
 ```
-                          Host (VPS)
- ┌────────────────────────────────────────────────────────────┐
- │  ┌──────────────────────┐   ┌──────────────────────────┐   │
- │  │  wg-easy (Docker)    │   │  LXD Agent "arthur"      │   │
- │  │  ─ 51821 dashboard   │   │  10.10.1.2 (VPN)         │   │
- │  │  ─ 51820/udp tunnel  │──│  Hermes :8642 :9119       │   │
- │  └──────────────────────┘   └──────────────────────────┘   │
- │                               ┌──────────────────────────┐   │
- │                               │  LXD Agent "bob"          │   │
- │  LXD bridge (lxdbr0)─────────│  10.10.1.3 (VPN)          │   │
- │  10.8.100.0/24 (NAT)         │  Hermes :8642 :9119       │   │
- │                               └──────────────────────────┘   │
- │  Docker bridge (10.10.0.0/24)                                │
- │  .agents/{name}/volume/ → /opt/data                          │
- └────────────────────────────────────────────────────────────┘
+Host (VPS)
+├── wg-easy (Docker, 10.10.0.2) ── WireGuard tunnel ──┐
+│   Tunnel: :51820/udp  Dashboard: :51821 (VPN-only)  │
+├── LXD bridge (lxdbr0, 10.8.100.0/24 NAT) ──── Internet
+│                                                      │
+├── Agent "arthur" (roundtable-arthur)  ◄──────────────┘
+│   ├── Hermes gateway (:8642 API, :9119 dashboard)
+│   ├── VPN: 10.10.1.x (auto-provisioned wg-easy peer)
+│   └── Volume: .agents/arthur/volume/ → /opt/data
+│
+├── Agent "bob" (roundtable-bob)    ◄──────────────┘
+│   ├── Hermes gateway (:8642 API, :9119 dashboard)
+│   ├── VPN: 10.10.1.x (auto-provisioned wg-easy peer)
+│   └── Volume: .agents/bob/volume/ → /opt/data
 ```
+
+Each agent has **two network paths**: the LXD bridge for outbound internet access (apt, API calls) and the WireGuard tunnel for VPN connectivity (agent-to-agent, admin access from your machine).
 
 **Key design decisions:**
 
@@ -82,8 +85,8 @@ sudo ./roundtable agent start arthur
 # 6. Setup Hermes inside the agent
 sudo ./roundtable agent setup arthur
 
-# 7. Connect with a WireGuard client
-roundtable wg peer config arthur  # print config for your local machine
+# 7. Create a WireGuard config for your local machine
+roundtable wg peer new admin  # creates and prints a config you can import in your WireGuard client
 ```
 
 ### What happens during setup
