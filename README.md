@@ -1,175 +1,301 @@
 # cli-roundtable
 
-Hermes Agent cluster manager — LXD system containers + WireGuard VPN. Each agent is a full Ubuntu container with root, apt, and persistent storage. Manage everything from a single CLI.
+**LXD-based Hermes Agent cluster manager.** Spin up isolated Hermes agents as LXD system containers behind a WireGuard VPN, orchestrated from a single CLI.
+
+---
+
+## How it works
+
+Each agent is a **full Ubuntu 24.04 LXD system container** cloned from a `roundtable-agent` golden image. The golden image is built once with Hermes Agent pre-installed — every agent is an identical clone with its own persistent volume.
+
+```
+                          Host (VPS)
+ ┌────────────────────────────────────────────────────────────┐
+ │  ┌──────────────────────┐   ┌──────────────────────────┐   │
+ │  │  wg-easy (Docker)    │   │  LXD Agent "arthur"      │   │
+ │  │  ─ 51821 dashboard   │   │  10.10.1.2 (VPN)         │   │
+ │  │  ─ 51820/udp tunnel  │──│  Hermes :8642 :9119       │   │
+ │  └──────────────────────┘   └──────────────────────────┘   │
+ │                               ┌──────────────────────────┐   │
+ │                               │  LXD Agent "bob"          │   │
+ │  LXD bridge (lxdbr0)─────────│  10.10.1.3 (VPN)          │   │
+ │  10.8.100.0/24 (NAT)         │  Hermes :8642 :9119       │   │
+ │                               └──────────────────────────┘   │
+ │  Docker bridge (10.10.0.0/24)                                │
+ │  .agents/{name}/volume/ → /opt/data                          │
+ └────────────────────────────────────────────────────────────┘
+```
+
+**Key design decisions:**
+
+- **Agents are orchestrators, not runners.** LLM inference happens on OpenRouter's GPUs — agents orchestrate tool calls (browsers, Python scripts) and relay API calls.
+- **VPN-only access.** The wg-easy dashboard is bound to an internal Docker IP (10.10.0.2:51821), not exposed publicly. Agents connect via WireGuard.
+- **Golden image pattern.** Build once (~1.4 GB), clone many (~30s each). The image bakes in Hermes Agent, Node.js 22, Python 3.11, Playwright Chromium, ffmpeg, and wireguard-tools.
+- **Dir storage.** LXD uses `dir` backend (no CoW), so each clone takes ~1.4 GB on disk. Simple, reliable, no kernel module dependencies.
+
+---
+
+## Prerequisites
+
+| Requirement | Min. version | Install command |
+|-------------|-------------|-----------------|
+| **Docker** (apt, not snap) | 28.x | `apt install -y docker.io docker-compose-v2` |
+| **Docker Compose v2** | 2.27+ | (included with `docker-compose-v2` above) |
+| **LXD** | 5.x+ | `snap install lxd && lxd init --auto --storage-backend dir` |
+| **Python 3** | 3.x | `apt install -y python3` (python3-bcrypt for password hashing) |
+| **Swap** (≥1 GB) | — | `fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` |
+| **iptables rule** | — | `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT` |
+| **Free disk** | ≥5 GB | — |
+
+> Tested on Ubuntu 26.04 / Linux 7.0.0-15 / Hetzner CX22 (4 GB RAM, 2 vCPU, ~21 GB free). LXD 6.8, Docker 29.1.3, Compose 2.40.3.
+
+**Why apt Docker, not snap?** Snap-confined Docker can't see `/opt` outside its mount namespace, which breaks golden image build mounts. Install via `apt install docker.io`.
+
+**Why the iptables rule?** Docker's `DOCKER-USER` chain defaults to `FORWARD DROP`, which blocks LXD container outbound traffic. Adding `lxdbr0` ACCEPT rules restores it.
+
+**Quick check:** `sudo ./roundtable prepare` runs all of these checks and shows what's missing. Add `--fix` to install everything automatically.
+
+---
 
 ## Quick start
 
 ```bash
-cp .env.example .env   # edit WG_HOST (VPS IP) and WG_PASSWORD
-sudo ./roundtable setup # or do it step by step:
+# 1. Configure
+cp .env.example .env
+# Edit WG_HOST (your VPS IP/domain) and WG_PASSWORD
+# Generate WG_PASSWORD_HASH with:
+#   python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(rounds=12)).decode())"
+
+# 2. Check host readiness (optional — auto-fixes with --fix)
+sudo ./roundtable prepare --fix
+
+# 3. Start the VPN
 sudo ./roundtable wg up
+
+# 4. Build the golden image (one-time)
 sudo ./roundtable golden-image build v2026.5.29.2
+
+# 5. Create and start agents
 sudo ./roundtable agent create arthur
 sudo ./roundtable agent start arthur
+
+# 6. Setup Hermes inside the agent
+sudo ./roundtable agent setup arthur
+
+# 7. Connect with a WireGuard client
+roundtable wg peer config arthur  # print config for your local machine
 ```
 
-## Prerequisites
+### What happens during setup
 
-| Requirement | Min. version | Why |
-|-------------|-------------|-----|
-| **Docker** (apt, not snap) | 28.x | Docker snap is confined and can't access `/opt`. Install via `apt install docker.io docker-compose-v2`. Tested with **29.1.3**. |
-| **Docker Compose v2** | 2.27+ | Comes with `docker-compose-v2` apt package. Tested with **2.40.3**. |
-| **LXD** (snap) | 5.x+ | Install via `snap install lxd`. Tested with **6.8**. Initialize with dir storage: `lxd init --auto --storage-backend dir`. |
-| **iptables** fix | — | Docker-USER chain must accept LXD traffic. Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` and `iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT`. |
-| **Swap** (1GB+) | — | Golden image build (unsquashfs) and Hermes install need breathing room on 4GB hosts. |
-| **~5GB free disk** | — | Golden image is 1.4GB + Hermes install overhead + agent rootfs clones. |
+| Step | What runs | Time |
+|------|-----------|------|
+| `wg up` | Docker Compose starts wg-easy container | ~10s |
+| `golden-image build vX` | Launches LXD temp container, installs Hermes, publishes image | ~3–4 min |
+| `agent create arthur` | Clones golden image → LXC container, creates WG peer, writes config | ~1 min |
+| `agent setup arthur` | Runs `hermes setup --run-as-user root` inside container | ~30s |
 
-> Tested on **Ubuntu 26.04**, Linux **7.0.0-15-generic**, Hetzner CX22 (4GB RAM, 2 vCPU).
+---
 
-## Architecture
+## CLI reference
 
-```
-┌───────────────────────────────────────┐
-│  Host (Hetzner VPS)                   │
-│  ┌─────────────────────────────────┐  │
-│  │  wg-easy (Docker)              │  │
-│  │  └─ 51821 (dashboard, VPN only)│  │
-│  │  └─ 51820/udp (WireGuard)     │  │
-│  └─────────────────────────────────┘  │
-│  ┌────────────┐ ┌────────────┐ ┌───┐  │
-│  │ Agent A    │ │ Agent B    │ │...│  │
-│  │ (LXD:      │ │ (LXD:      │ │   │  │
-│  │  roundtable-a)│  roundtable-b)│   │  │
-│  └────────────┘ └────────────┘ └───┘  │
-│  ┌─────────────────────────────────┐  │
-│  │  lxdbr0 (NAT) │ .agents/{n}/   │  │
-│  └─────────────────────────────────┘  │
-└───────────────────────────────────────┘
+### `prepare`, `doctor`, `ready` — Host readiness
+
+```bash
+roundtable prepare              # Check all prerequisites
+roundtable doctor               # Same
+roundtable ready                # Same
+roundtable prepare --fix        # Auto-install missing prerequisites
 ```
 
-- **Agents** are LXD system containers cloned from a `roundtable-agent` golden image. LXC containers are namespaced `roundtable-{name}` to avoid polluting the LXD pool — you still use short names in the CLI (`roundtable agent shell arthur`).
-- **Golden image** (`roundtable golden-image build <version>`) installs Hermes Agent with `--non-interactive --skip-setup` so no TTY is needed.
-- **VPN** uses wg-easy in Docker. The dashboard (port 51821) is only accessible over the WireGuard tunnel, not public.
-- **Persistent data** per agent lives in `.agents/{name}/volume/`, mounted at `/opt/data` inside the container.
+### `wg` — WireGuard VPN
 
-## Commands
-
-### WireGuard
-| Command | What it does |
-|---------|-------------|
-| `roundtable wg up` | Start wg-easy VPN |
-| `roundtable wg down` | Stop wg-easy |
-| `roundtable wg logs` | Follow wg-easy logs |
-| `roundtable wg peer new <name>` | Create client config |
-| `roundtable wg peer list` | List all peers |
-| `roundtable wg peer config <name>` | Print peer config (for your local machine) |
-
-### Golden image
-| Command | What it does |
-|---------|-------------|
-| `roundtable golden-image build <version>` | Build golden image with Hermes Agent |
-| `roundtable golden-image rebuild <version>` | Rebuild from scratch (deletes old image) |
-
-Version is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is published under the `roundtable-agent` alias (see [Resource planning](#resource-planning) for size breakdown).
-
-### Host readiness
-| Command | What it does |
-|---------|-------------|
-| `roundtable prepare` | Check all prerequisites are installed (Docker, LXD, iptables, swap, disk space) |
-| `roundtable doctor` | Alias for `prepare` |
-| `roundtable ready` | Alias for `prepare` |
-| `roundtable prepare --fix` | Auto-install missing prerequisites (requires sudo) |
-
-Run this first on a fresh machine to see what's missing. Use `--fix` to fix everything automatically.
-
-### Agents
-| Command | What it does |
-|---------|-------------|
-| `roundtable agent list` | List agents and their status |
-| `roundtable agent create <name>` | Clone golden image + create peer |
-| `roundtable agent start <name>` | Start agent container |
-| `roundtable agent stop <name>` | Stop agent container |
-| `roundtable agent restart <name>` | Restart agent container |
-| `roundtable agent shell <name>` | Open root shell inside container |
-| `roundtable agent logs <name>` | Follow container journal |
-| `roundtable agent setup <name>` | Run `hermes setup` inside container |
-| `roundtable agent delete <name>` | Destroy agent + revoke peer |
-
-## Resource planning
-
-Each agent runs a Node.js gateway (~120MB idle) and may spawn tools (Chromium, Python). Deductions happen on OpenRouter's GPU, so the agents are orchestrators, not runners.
-
-| Task profile | RAM per agent | CPU per agent | Notes |
-|-------------|--------------|--------------|-------|
-| Idle / light | ~250MB | minimal | Gateway running (140MB observed), no active tasks |
-| Browser tasks | ~500–700MB | ~1 vCPU | Headless Chromium adds 250–500MB |
-| Image/script tasks | ~400MB | ~1 vCPU burst | Python/PIL, short-lived |
-
-### Golden image
-
-Build once, clone many. The image is ~1.4GB and contains everything Hermes needs:
-
-```
-Component                Size
-─────────────────────────────────────────
-Ubuntu 24.04 base        ~270 MB
-Hermes + Python + Node   ~200 MB
-Playwright Chromium      ~177 MB
-Playwright headless      ~114 MB
-ffmpeg + deps            ~200 MB
-wireguard-tools + certs  ~10 MB
-90 Hermes skills          ~50 MB
-Squashfs overhead        ~280 MB
-─────────────────────────────────────────
-Total                   ~1,415 MB
+```bash
+roundtable wg up                # Start wg-easy (Docker Compose)
+roundtable wg down              # Stop wg-easy
+roundtable wg logs              # Follow wg-easy logs
+roundtable wg peer new <name>   # Create a WireGuard peer + print config
+roundtable wg peer list         # List all peers with IPs
+roundtable wg peer config <name> # Print peer config (for client machines)
 ```
 
-Cloning from the image takes ~30s. With LXD's dir storage backend (no CoW) each clone takes a full ~1.4GB on disk. For 3–5 agents, budget ~5–8GB for agent rootfs.
+### `golden-image` — Agent base image
 
-### Runtime ports inside each agent
+```bash
+roundtable golden-image build <version>   # Build golden image from Ubuntu 24.04
+roundtable golden-image rebuild <version> # Delete existing image and rebuild from scratch
+```
 
-| Port | Service | Bind |
-|------|---------|------|
-| 8642 | Hermes API server | 127.0.0.1 (loopback only) |
-| 9119 | Hermes dashboard | 127.0.0.1 (separate process) |
+`<version>` is a Hermes Agent release tag (e.g. `v2026.5.29.2`). The image is published under the `roundtable-agent` LXD alias.
 
-Port 8642 accepts requests with `x-api-key: <API_SERVER_KEY>`. Both are local-only — agents communicate via WireGuard, not public network.
+### `agent` — Agent lifecycle
 
-### Capacity by plan
+```bash
+roundtable agent list                  # List containers
+roundtable agent create <name>         # Clone golden image + create WG peer
+roundtable agent start <name>          # Start container
+roundtable agent stop <name>           # Stop container
+roundtable agent restart <name>        # Restart container
+roundtable agent shell <name>          # Open root shell
+roundtable agent logs <name>           # Follow container journal
+roundtable agent setup <name>          # Run hermes setup inside container
+roundtable agent delete <name>         # Destroy container + revoke WG peer
+```
 
-| Hetzner plan | RAM | vCPU | Agents | Browser tasks at once |
-|---|---|---|---|---|
-| **CX22** (€3.79) | 4GB | 2 | 3 | 1–2 |
-| **CX32** (€6.99) | 8GB | **4** | **5** | **3–4** ← sweet spot |
-| **CX42** (€12.99) | 16GB | 8 | 5+ | unlimited |
+Agent containers are **namespaced** — `agent create arthur` creates an LXC container named `roundtable-arthur`, so the LXD pool stays organised.
 
-**Why CX32 is the sweet spot:** Host + Docker + LXD overhead sits at ~700MB. With 8GB you split the remaining ~7.3GB across 5 agents (~1.4GB each) — enough that 3–4 can run Chromium simultaneously without swap. The 4 vCPUs let concurrent browser tasks time-slice without starving the host or wg-easy.
-
-**CX22 works** if you set per-agent limits (default: 768MB/1vCPU in `.env`) and accept that heavy tasks compete. Inference is remote — these resources are just for orchestration.
+---
 
 ## Configuration
 
-All in `.env`:
+| Variable | Default | Required | Purpose |
+|----------|---------|----------|---------|
+| `WG_HOST` | — | ✅ | VPS IP or domain (wg-easy endpoint) |
+| `WG_PASSWORD` | — | ✅ | Plaintext password for wg-easy API calls |
+| `WG_PASSWORD_HASH` | — | ✅ | bcrypt hash of password (wg-easy v14+) |
+| `AGENT_MEMORY` | `768MB` | — | Per-agent RAM limit (LXD cgroup) |
+| `AGENT_CPU` | `1` | — | Per-agent vCPU limit |
+| `WG_EASY_VERSION` | `14` | — | wg-easy Docker image tag |
+| `UBUNTU_IMAGE` | `ubuntu:24.04` | — | LXD image alias for golden image base |
+| `LXD_STORAGE` | `roundtable` | — | LXD storage pool name |
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `WG_HOST` | — | VPS IP or domain (required) |
-| `WG_PASSWORD` | — | wg-easy dashboard password (required) |
-| `AGENT_MEMORY` | `768MB` | Per-agent memory limit (LXD cgroup) |
-| `AGENT_CPU` | `1` | Per-agent CPU limit (LXD cgroup) |
-| `LXD_STORAGE` | `roundtable` | LXD storage pool name |
-| `WG_EASY_VERSION` | `14` | wg-easy Docker image tag |
-| `UBUNTU_IMAGE` | `ubuntu:24.04` | LXD image alias for golden image base |
+**Password hash generation:**
+```bash
+python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(rounds=12)).decode())"
+```
+
+wg-easy v14 dropped plaintext `PASSWORD` in favour of `PASSWORD_HASH`. The compose.yml uses `PASSWORD_HASH` with a bcrypt hash. Single-quote the value in `.env` to prevent `$` shell expansion.
+
+---
+
+## Network design
+
+### IP layout
+
+| Network | Subnet | Purpose |
+|---------|--------|---------|
+| Docker bridge | `10.10.0.0/24` | wg-easy container and host communication |
+| wg-easy static IP | `10.10.0.2` | wg-easy container (not 10.10.0.1 — Docker gateway) |
+| WireGuard pool | `10.10.1.x` | Per-agent VPN addresses, assigned by wg-easy |
+| LXD bridge | `10.8.100.0/24` | LXD containers (NAT to host, outbound only) |
+| Docker gateway | `10.10.0.1` | Docker bridge gateway (unused by wg-easy) |
+
+### Ports
+
+| Port | Service | Visibility |
+|------|---------|------------|
+| `51820/udp` | WireGuard tunnel | Public (incoming) |
+| `51821` | wg-easy dashboard | Internal only (`10.10.0.2:51821`) |
+| `8642` | Hermes API server (per agent) | Agent loopback only |
+| `9119` | Hermes dashboard (per agent) | Agent loopback only |
+
+### Firewall
+
+- **Docker's `DOCKER-USER` chain** must accept LXD bridge traffic.
+  ```
+  iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT
+  iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT
+  ```
+  Without this, LXD containers can't reach the internet (packages, Hermes install, API calls).
+- The host firewall should expose `51820/udp`. Everything else stays internal.
+- wg-easy dashboard (`51821`) is **not** port-mapped to the host — access it via WireGuard tunnel.
+
+### Agent connectivity
+
+Each agent gets a WireGuard peer on `10.10.1.x` via wg-easy. The config is written into the container at `/etc/wireguard/wg0.conf` and activated with `wg-quick up wg0`. This means:
+
+- Agents can reach each other over WireGuard
+- Your local machine can reach all agents by connecting to the same wg-easy server
+- Hermes dashboard (`:9119`) and API (`:8642`) are accessible over the tunnel
+
+---
+
+## Golden image
+
+The `roundtable-agent` golden image is built from Ubuntu 24.04 and published to the local LXD image store. Everything Hermes needs is baked in:
+
+| Component | Size |
+|-----------|------|
+| Ubuntu 24.04 base | ~270 MB |
+| Hermes Agent + Node.js 22 + Python 3.11 + uv | ~200 MB |
+| Playwright Chromium | ~177 MB |
+| Playwright headless shell | ~114 MB |
+| ffmpeg + system deps | ~200 MB |
+| wireguard-tools + ca-certificates | ~10 MB |
+| 90 Hermes skills | ~50 MB |
+| Squashfs overhead | ~280 MB |
+| **Total** | **~1,415 MB (1.4 GB)** |
+
+**Build time:** ~3–4 minutes (depends on download speed and disk I/O).
+
+**Clone time:** ~30 seconds per agent. With dir storage (no CoW), each clone uses a full ~1.4 GB on disk.
+
+**Version pinning:** The golden image locks specific versions of Hermes (`<version>` argument), Ubuntu (`UBUNTU_IMAGE`), wireguard-tools, curl, and ca-certificates. What isn't pinned: Node.js, Python, Playwright, ffmpeg — those come from Hermes' own installer. To update them, build with a newer Hermes release.
+
+---
+
+## Resource planning
+
+Each agent is an orchestrator — LLM inference is remote (OpenRouter), so agents only need enough RAM for their tool runtime.
+
+| Task profile | RAM per agent | CPU | Notes |
+|-------------|--------------|-----|-------|
+| Idle / light | ~250 MB | Minimal | Gateway running (140 MB observed), no tasks |
+| Browser tasks | ~500–700 MB | ~1 vCPU | Headless Chromium adds 250–500 MB |
+| Script/image tasks | ~400 MB | ~1 vCPU burst | Python/PIL, short-lived |
+
+### Capacity by VPS plan
+
+| Plan | RAM | vCPU | Agents | Concurrent browser tasks |
+|------|-----|------|--------|-------------------------|
+| **CX22** (€3.79) | 4 GB | 2 | 3 | 1–2 |
+| **CX32** (€6.99) | 8 GB | 4 | **5** | **3–4** ← sweet spot |
+| **CX42** (€12.99) | 16 GB | 8 | 5+ | Unlimited |
+
+**CX22 works** with per-agent limits (768 MB / 1 vCPU default) if you accept that heavy tasks compete. The host reserves ~700 MB for Docker + LXD overhead, leaving ~3.3 GB for agents.
+
+**CX32 is the sweet spot.** 8 GB splits ~7.3 GB across 5 agents (~1.4 GB each) — enough headroom for 3–4 to run Chromium simultaneously. 4 vCPUs let browser tasks time-slice without starving wg-easy or the host.
+
+---
 
 ## Version pinning
 
-Software versions are pinned in the code itself — check `.env.example`, `compose.yml`, and the `roundtable` script for exact pins.
+Everything under our control is pinned to specific versions for reproducible builds. See each file for the exact values:
 
-| What's pinned | How | Override |
-|--------------|-----|----------|
-| **wg-easy** Docker image | `WG_EASY_VERSION` in .env / compose.yml | `WG_EASY_VERSION=15` in .env |
-| **Ubuntu base** (golden image) | `UBUNTU_IMAGE` in .env / roundtable script | `UBUNTU_IMAGE=ubuntu:22.04` in .env |
-| **wireguard-tools, curl, ca-certificates** (golden image) | Apt version pins in `roundtable` script | `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` in .env |
-| **Hermes Agent** | CLI argument to `golden-image build` | Pass a different version: `golden-image build v2026.6.1` |
+| What's pinned | Where | How to upgrade |
+|--------------|-------|----------------|
+| wg-easy Docker image | `WG_EASY_VERSION` in `.env` | Set `WG_EASY_VERSION=15` (or whichever) |
+| Ubuntu base image | `UBUNTU_IMAGE` in `.env` | Set `UBUNTU_IMAGE=ubuntu:22.04` |
+| wireguard-tools, curl, ca-certificates | Apt version pins in `roundtable` script | Set `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` in `.env` |
+| Hermes Agent | CLI argument | `golden-image build v2026.6.1` |
 
-> What isn't pinned: Node.js, Python, Playwright, ffmpeg — these are installed by Hermes Agent's own installer and come from its bundled versions. To change those, pin a different Hermes release.
+**Not pinned (managed by Hermes installer):** Node.js, Python, Playwright, ffmpeg. To change their versions, pin a different Hermes release when building the golden image.
+
+---
+
+## Known issues & workarounds
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| LXD containers have no network | Docker's `DOCKER-USER` chain drops forwarded packets | Add `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT` (or run `prepare --fix`) |
+| Golden image build OOM on 4 GB hosts | `unsquashfs` during image publish spikes memory | Create swap: `fallocate -l 1G /swapfile && mkswap && swapon` |
+| Docker snap can't see `/opt` | Snap confinement | Install via `apt install docker.io` instead |
+| wg-easy v14 API returns 404 for peer config | v14 uses UUID paths, not name-based | Set `WG_EASY_VERSION=14` (pinned). The script resolves UUID automatically |
+| `$` in .env password gets eaten by shell | Shell variable expansion | Single-quote the value, or escape `$` |
+| Agent delete not cleaning WireGuard peers | Also uses name-based URL (same UUID issue) | Manually delete via wg-easy dashboard, or `curl` with resolved UUID |
+
+---
+
+## File structure
+
+```
+cli-roundtable/
+  roundtable        # Main CLI (bash, ~500 lines)
+  peers             # Standalone WireGuard peer manager (bash, ~115 lines)
+  compose.yml       # wg-easy Docker Compose config
+  .env.example      # Configuration template
+  .env              # Your config (gitignored)
+  .agents/
+    {name}/
+      volume/       # Persistent storage mounted at /opt/data inside agent
+```
