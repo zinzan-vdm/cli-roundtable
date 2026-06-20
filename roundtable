@@ -395,7 +395,7 @@ cmd_prepare() {
   fi
 
   # ── 5. iptables rules (DOCKER-USER + lxdbr0) ───────────────
-  if iptables -L DOCKER-USER -n 2>/dev/null | grep -q "lxdbr0"; then
+  if iptables -L DOCKER-USER -n -v 2>/dev/null | grep -q "lxdbr0"; then
     check "iptables (DOCKER-USER)" ok "lxdbr0 FORWARD accepted"
   else
     check "iptables (DOCKER-USER)" fail "lxdbr0 not in DOCKER-USER chain"
@@ -406,7 +406,7 @@ cmd_prepare() {
   # ── 6. Swap (≥1GB) ────────────────────────────────────────
   local swap_total
   swap_total=$(swapon --show=size --noheadings --bytes 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s}')
-  if [[ -n "$swap_total" && "$swap_total" -ge 1073741824 ]]; then
+  if [[ -n "$swap_total" && "$swap_total" -ge 1000000000 ]]; then
     local swap_hr
     swap_hr=$(numfmt --to=iec "$swap_total" 2>/dev/null || echo "${swap_total}B")
     check "Swap (≥1GB)" ok "${swap_hr}"
