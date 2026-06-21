@@ -75,7 +75,7 @@ sudo ./roundtable agent setup arthur
 sudo ./roundtable agent gateway up arthur
 
 # 6. Generate a WireGuard config for your laptop (optional)
-./roundtable wg peer new laptop    # creates + prints a config for your WireGuard client
+./roundtable wg peer new laptop    # creates a foreign peer (default), prints WG config
 # Save the output to a file and import it in your laptop's WireGuard app
 ```
 
@@ -98,13 +98,14 @@ sudo ./roundtable agent gateway up arthur
 ```bash
 roundtable wg init [--force]          # Initialize host wg0 mesh (idempotent)
 roundtable wg up|down                 # Bring wg0 up/down
-roundtable wg peer new <name>         # Create agent WireGuard peer + print config
+roundtable wg peer new <name>         # Create foreign WireGuard peer (laptop/admin) + print config
+roundtable wg peer new --type agent <name>  # Create agent WireGuard peer
 roundtable wg peer config <name>      # Print peer's WireGuard config
-roundtable wg peer rm <name>          # Remove an agent peer
+roundtable wg peer rm <name>          # Remove any peer (agent, foreign, or cluster)
 roundtable wg invite                  # Generate anonymous cluster invitation
 roundtable wg join <name> <invite>    # Connect to a remote mesh
 roundtable wg leave <name>            # Disconnect from a remote mesh
-roundtable wg peers                   # List all peers (agents + clusters)
+roundtable wg peers                   # List all peers (agents + foreign + clusters)
 ```
 
 ### `golden-image` — Agent base image
@@ -343,8 +344,10 @@ cli-roundtable/
   config.yml            # Your config (gitignored)
   config.example.yml    # Configuration template
   .roundtable/          # Runtime state (gitignored)
-    ip-pool             # IP allocation tracker
+    ip-pool             # Agent IP allocation tracker (from network.wg.subnets.agents)
+    foreign-ip-pool     # Foreign IP allocation tracker (from network.wg.subnets.foreign)
     peers/              # Peer records (YAML)
+    configs/            # Saved configs for foreign/laptop peers
     cluster-subnets     # Connected remote subnets
   .agents/              # Per-agent persistent storage
     {name}/
