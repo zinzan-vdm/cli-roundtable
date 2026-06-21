@@ -2,7 +2,7 @@
 .env
 
 # Runtime state (peer records, IP pool, active config)
-.roundtable/
+.roundtable/*
 !.roundtable/config.example
 
 # Build artifacts

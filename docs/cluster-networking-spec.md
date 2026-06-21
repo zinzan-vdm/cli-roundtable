@@ -234,50 +234,68 @@ Agent deletion updates:
 1. Calls `roundtable wg peer rm <name>` to free the IP and remove peer
 2. Removes `.agents/<name>/wg0.conf`
 
-## 4. Configuration (.env)
+## 4. Configuration (YAML via yq)
 
-### New variables
+Configuration is stored in `.roundtable/config` (YAML format) in the project root, parsed via `mikefarah/yq` v4.44.6 (Go binary). The config tree:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `WG_SUBNET` | `10.10.1.0/24` | Host's mesh subnet (each host gets a unique /24) |
-| `WG_PORT` | `51820` | WireGuard listen port (was for wg-easy, now for host wg0) |
-| `WG_HOST` | (required) | Public IP or domain (needed for remote hosts to reach us) |
-| `CLUSTER_SUBNET` | `10.0.0.0/8` | The cluster-wide network prefix agents route through their host |
-| `WG_PERSISTENT_KEEPALIVE` | `25` | Keepalive interval for agent→host and cluster links |
+```yaml
+network:
+  host: vps-ip-or-domain              # Public IP/domain (required)
+  wg:
+    interface: wg0                     # WireGuard interface name
+    port: 51820                        # Listen port
+    subnets:
+      cluster: 10.0.0.0/8             # Agent routing scope (AllowedIPs)
+      agents: 10.0.1.0/24             # Local agent IP pool (host .1, pool .2-.254)
+      foreign: 10.0.2.0/24            # Admin/laptop VPN peer range
+    opts:
+      persistent_keepalive: 25        # Keepalive interval (seconds)
+agents:
+  limits:
+    cpu: 1
+    memory: 768MB
+golden-image:
+  base: ubuntu:24.04
+```
 
-### Removed variables
+### Config values
+
+| YAML path | Variable | Default | Purpose |
+|-----------|----------|---------|---------|
+| `network.host` | `WG_HOST` | (required) | Public IP or domain (needed for cluster invites) |
+| `network.wg.interface` | `WG_INTERFACE` | `wg0` | WireGuard interface name |
+| `network.wg.port` | `WG_PORT` | `51820` | WireGuard listen port |
+| `network.wg.subnets.cluster` | `CLUSTER_SUBNET` | `10.0.0.0/8` | The cluster-wide network prefix agents route through their host |
+| `network.wg.subnets.agents` | `AGENTS_SUBNET` | `10.0.1.0/24` | Local agent IP pool (host mesh IP = .1) |
+| `network.wg.subnets.foreign` | `FOREIGN_SUBNET` | `10.0.2.0/24` | Admin/laptop VPN peer range |
+| `network.wg.opts.persistent_keepalive` | `PERSISTENT_KEEPALIVE` | `25` | Keepalive interval for agent→host and cluster links |
+| `agents.limits.cpu` | `AGENT_CPU` | `1` | vCPU limit per agent |
+| `agents.limits.memory` | `AGENT_MEMORY` | `768MB` | RAM limit per agent |
+| `golden-image.base` | `UBUNTU_IMAGE` | `ubuntu:24.04` | LXD image for golden image base |
+
+### Removed (from .env)
 
 | Variable | Why |
-|---|---|
-| `WG_PASSWORD` | No wg-easy API auth needed |
+|----------|-----|
+| `WG_PASSWORD` | wg-easy eliminated |
 | `WG_PASSWORD_HASH` | Same |
-| `WG_SUBNET` (old meaning) | Renamed; old value was Docker bridge subnet, now is host mesh subnet |
-| `WG_HOST_IP` | wg-easy static IP in Docker not needed |
-| `WG_POOL_ADDRESS` | Handled by IP pool allocator, not a configurable template |
-| `WG_ALLOWED_IPS` | Per-agent AllowedIPs = CLUSTER_SUBNET, per-host peer AllowedIPs = cluster-joined subnets |
+| `WG_HOST_IP` | wg-easy static IP not needed |
+| `WG_POOL_ADDRESS` | Handled by IP pool allocator |
+| `WG_ALLOWED_IPS` | Per-agent = CLUSTER_SUBNET, per-host = joined subnets |
 | `WG_EASY_VERSION` | No wg-easy |
-| `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` | Apt pins moved to a `REQUIRED_PACKAGES` list (simpler) |
+| `WG_TOOLS_VER`, `CURL_VER`, `CA_CERT_VER` | Replaced by apt in golden image build |
 
-### Preserved variables
-
-| Variable | Notes |
-|---|---|
-| `AGENT_MEMORY` | Unchanged |
-| `AGENT_CPU` | Unchanged |
-| `UBUNTU_IMAGE` | Unchanged |
-| `LXD_STORAGE` | Unchanged |
-
-## 5. State Directory: `/var/lib/roundtable/`
+## 5. State Directory: `.roundtable/`
 
 ```
-/var/lib/roundtable/
-├── ip-pool            ← Flat file, one IP per line, "#" for allocated
-├── peers/             ← Peer records
-│   ├── arthur.conf    ← Agent peer record (name, ip, pubkey, type=agent)
-│   ├── horo.conf
-│   └── host-b.conf    ← Cluster peer record (name, ip, pubkey, type=cluster, endpoint, subnet)
-└── cluster-subnets    ← One subnet per line (e.g. "10.20.1.0/24"), used for wg-quick routing config
+cli-roundtable/
+└── .roundtable/             ← State directory (gitignored, auto-created by wg init)
+    ├── config               ← YAML config (copy from config.example, edit)
+    ├── ip-pool              ← Flat file, one IP per line, "#" for allocated
+    ├── cluster-subnets      ← One subnet per line (e.g. "10.0.1.0/24")
+    └── peers/               ← Peer records (YAML format)
+        ├── arthur.yml       ← Agent peer record
+        └── host-b.yml       ← Cluster peer record
 ```
 
 ### `ip-pool` format
@@ -298,28 +316,29 @@ Agent deletion updates:
 
 Allocation algorithm: scan for first line without `#` prefix, read the IP, prepend `#`. Deallocation: remove `#` prefix.
 
-### `peers/<name>.conf` format (agent)
+### `peers/<name>.yml` format (agent)
 
-```ini
-# /var/lib/roundtable/peers/arthur.conf
-NAME=arthur
-IP=10.10.1.2
-PUBKEY=<agent-public-key>
-TYPE=agent
-CREATED=2026-06-21T12:00:00Z
+```yaml
+# .roundtable/peers/arthur.yml
+name: arthur
+ip: 10.0.1.2
+public_key: xTIB9q...J0Xk=
+type: agent
+created: 2026-06-21T12:00:00Z
 ```
 
-### `peers/<name>.conf` format (cluster)
+### `peers/<name>.yml` format (cluster)
 
-```ini
-# /var/lib/roundtable/peers/host-b.conf
-NAME=host-b
-IP=10.20.1.1
-PUBKEY=<remote-host-public-key>
-TYPE=cluster
-ENDPOINT=203.0.113.5:51820
-SUBNET=10.20.1.0/24
-CREATED=2026-06-21T12:00:00Z
+```yaml
+# .roundtable/peers/host-b.yml
+name: host-b
+type: cluster
+public_key: <remote-host-public-key>
+endpoint: 203.0.113.5:51820
+subnets:
+  agents: 10.0.3.0/24
+  foreign: 10.0.4.0/24
+created: 2026-06-21T12:00:00Z
 ```
 
 ## 6. Implementation plan
@@ -494,23 +513,25 @@ An agent can only reach IPs that match its `AllowedIPs` = `CLUSTER_SUBNET`. It c
 
 ### New files to create
 ```
-/var/lib/roundtable/                     ← State directory (created by wg init)
-/var/lib/roundtable/ip-pool              ← IP allocation tracker
-/var/lib/roundtable/cluster-subnets      ← Connected remote subnets
-/var/lib/roundtable/peers/               ← Peer records directory
+.roundtable/                     ← State directory (created by wg init)
+.roundtable/config.example       ← Config template (version-controlled)
+.roundtable/ip-pool              ← IP allocation tracker
+.roundtable/cluster-subnets      ← Connected remote subnets
+.roundtable/peers/               ← Peer records directory (YAML)
 ```
 
 ### Existing files to modify
 ```
-roundtable        ← Major rework: replace wg-easy functions with raw-wg + add cluster commands
-.env.example      ← Replace wg-easy vars with WG_SUBNET, WG_PORT, WG_HOST, CLUSTER_SUBNET
-compose.yml       ← Remove entirely (wg-easy is gone) OR repurpose for something else later
-README.md         ← Update architecture diagram, CLI reference, removed features
+roundtable        ← Major rework: replace wg-easy with raw-wg + cluster commands
+.gitignore        ← Add .roundtable/ (keep config.example tracked)
+README.md         ← Update architecture, CLI reference, removed features
 ```
 
 ### Files to remove
 ```
-compose.yml       ← wg-easy and its Docker Compose orchestration are no longer needed
+compose.yml       ← wg-easy + Docker Compose no longer needed
+.env.example      ← Replaced by .roundtable/config.example
+.env              ← No longer read by script (keep gitignored for cleanup)
 ```
 
 ## 9. Implementation order & dependencies

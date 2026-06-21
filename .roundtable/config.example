@@ -1,0 +1,39 @@
+# cli-roundtable configuration
+# Copy to .roundtable/config and fill in your values
+
+network:
+  # Public-facing host (VPS IP or domain) — required for cluster invites
+  host: vps-ip-or-domain
+
+  wg:
+    # WireGuard interface name (default: wg0 — change only if conflicting)
+    interface: wg0
+
+    # WireGuard tunnel port (public UDP)
+    port: 51820
+
+    # Subnet layout — each host needs unique agents + foreign subnets
+    subnets:
+      # Cluster-wide network prefix that agents route through their host.
+      # Default covers all 10.x.x.x — change only if you need to avoid conflicts.
+      cluster: 10.0.0.0/8
+
+      # Where agents on THIS host get their IPs.
+      # Each host gets a unique /24 (e.g. Host A: 10.0.1.0/24, Host B: 10.0.3.0/24)
+      agents: 10.0.1.0/24
+
+      # Where admin/laptop VPN peers get their IPs.
+      # Also per-host unique (e.g. Host A: 10.0.2.0/24, Host B: 10.0.4.0/24)
+      foreign: 10.0.2.0/24
+
+    opts:
+      # Persistent keepalive for agent→host and cluster links (seconds)
+      persistent_keepalive: 25
+
+agents:
+  limits:
+    cpu: 1
+    memory: 768MB
+
+golden-image:
+  base: ubuntu:24.04
