@@ -254,7 +254,7 @@ WGCONF
     echo "⚠️  Port ${WG_PORT}/udp is already in use:" >&2
     echo "    ${conflict}" >&2
     echo "    Run 'docker stop cli-roundtable-wg-easy-1' if it's a leftover wg-easy container." >&2
-    echo "    Or set a different port in .roundtable/config (network.wg.port)." >&2
+    echo "    Or set a different port in config.yml (network.wg.port)." >&2
     exit 1
   fi
 
@@ -786,7 +786,7 @@ cmd_check() {
   if [[ -f "$CONFIG" ]]; then
     check "Config (config.yml)" ok "present"
   else
-    check "Config (.roundtable/config)" fail "not found"
+    check "Config (config.yml)" fail "not found"
     errors+=("config")
     fixes+=("cp config.example.yml config.yml && vi config.yml")
   fi

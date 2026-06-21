@@ -75,8 +75,8 @@ sudo ./roundtable agent setup arthur
 sudo ./roundtable agent gateway up arthur
 
 # 6. Generate a WireGuard config for your laptop (optional)
-./roundtable wg invite > laptop-invite.yml
-# Copy laptop-invite.yml to your laptop and import it
+./roundtable wg peer new laptop    # creates + prints a config for your WireGuard client
+# Save the output to a file and import it in your laptop's WireGuard app
 ```
 
 ### What happens during setup

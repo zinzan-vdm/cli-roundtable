@@ -1,5 +1,5 @@
 # cli-roundtable configuration
-# Copy to .roundtable/config and fill in your values
+# Copy to config.yml and fill in your values
 
 network:
   # Public-facing host (VPS IP or domain) — required for cluster invites
