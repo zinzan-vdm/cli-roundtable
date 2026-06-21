@@ -246,6 +246,17 @@ WGCONF
   # Init state directory
   init_state_dir
 
+  # Check for port conflict before bringing up wg0
+  if ss -tulpn | grep -q ":${WG_PORT} "; then
+    local conflict
+    conflict=$(ss -tulpn "sport = :${WG_PORT}" 2>/dev/null | grep -v "wg0" | head -1)
+    echo "⚠️  Port ${WG_PORT}/udp is already in use:" >&2
+    echo "    ${conflict}" >&2
+    echo "    Run 'docker stop cli-roundtable-wg-easy-1' if it's a leftover wg-easy container." >&2
+    echo "    Or set a different port in .roundtable/config (network.wg.port)." >&2
+    exit 1
+  fi
+
   echo "==> Bringing up ${WG_INTERFACE}..." >&2
   wg-quick up "$WG_INTERFACE" || { echo "Failed to bring up ${WG_INTERFACE}." >&2; exit 1; }
 
@@ -886,6 +897,19 @@ cmd_check() {
     fi
   else
     check "Host wg0" skip "(config not available)"
+  fi
+
+  # Check if AppArmor blocks wg-quick IPv4 sockets
+  if command -v aa-status &>/dev/null && aa-status 2>/dev/null | grep -q "wg-quick"; then
+    if [[ -f /etc/apparmor.d/local/wg-quick ]] && grep -q "network inet dgram" /etc/apparmor.d/local/wg-quick 2>/dev/null; then
+      check "AppArmor wg-quick" ok "IPv4 sockets allowed"
+    else
+      check "AppArmor wg-quick" fail "blocks IPv4 sockets"
+      errors+=("apparmor-wg")
+      fixes+=("echo \"network inet dgram,\" >> /etc/apparmor.d/local/wg-quick && apparmor_parser -r /etc/apparmor.d/wg-quick")
+    fi
+  else
+    check "AppArmor wg-quick" skip "(not enabled)"
   fi
 
   if [[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" == "1" ]]; then
