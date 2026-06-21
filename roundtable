@@ -33,7 +33,7 @@ usage() {
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROUNDTABLE_DIR="${ROOT}/.roundtable"
-CONFIG="${ROUNDTABLE_DIR}/config"
+CONFIG="${ROOT}/config.yml"
 IP_POOL="${ROUNDTABLE_DIR}/ip-pool"
 PEERS_DIR="${ROUNDTABLE_DIR}/peers"
 CLUSTER_SUBNETS_FILE="${ROUNDTABLE_DIR}/cluster-subnets"
@@ -51,7 +51,7 @@ load_config() {
   yq_required
   [[ -f "$CONFIG" ]] || {
     echo "Error: ${CONFIG} not found." >&2
-    echo "  Copy ${ROUNDTABLE_DIR}/config.example to ${CONFIG} and fill in your values." >&2
+    echo "  Copy config.example.yml to config.yml and fill in your values." >&2
     exit 1
   }
 
@@ -784,11 +784,11 @@ cmd_check() {
 
   # Config
   if [[ -f "$CONFIG" ]]; then
-    check "Config (.roundtable/config)" ok "present"
+    check "Config (config.yml)" ok "present"
   else
     check "Config (.roundtable/config)" fail "not found"
     errors+=("config")
-    fixes+=("cp .roundtable/config.example .roundtable/config && vi .roundtable/config")
+    fixes+=("cp config.example.yml config.yml && vi config.yml")
   fi
 
   if command -v lxc &>/dev/null; then
