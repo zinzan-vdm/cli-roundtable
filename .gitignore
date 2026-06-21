@@ -1,6 +1,10 @@
 # Secrets
 .env
 
+# Runtime state (peer records, IP pool, active config)
+.roundtable/
+!.roundtable/config.example
+
 # Build artifacts
 __pycache__/
 *.pyc
