@@ -1,6 +1,12 @@
 # Secrets
 .env
 
+# Runtime config (contains host IP, subnets — edit your own copy)
+config.yml
+
+# Runtime state (peer records, IP pools, volumes, configs)
+.roundtable/
+
 # Build artifacts
 __pycache__/
 *.pyc

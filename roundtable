@@ -4,12 +4,18 @@ set -euo pipefail
 usage() {
   echo "Usage: roundtable <command> [args...]"
   echo ""
-  echo "Commands:"
-  printf "  %-42s %s\n" "wg up|down|logs" "Manage wg-easy VPN"
-  printf "  %-42s %s\n" "wg peer new <name>" "Create WireGuard peer"
-  printf "  %-42s %s\n" "wg peer list" "List peers"
-  printf "  %-42s %s\n" "wg peer config <name>" "Print peer config"
-  printf "  %-42s %s\n" "wg host up|down|ip" "Manage host's WireGuard tunnel"
+  echo "WireGuard networking:"
+  printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
+  printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
+  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config (default: foreign)"
+  printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
+  printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
+  printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
+  printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
+  printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
+  printf "  %-42s %s\n" "wg peers" "List all peers (agents + clusters)"
+  echo ""
+  echo "Agents:"
   printf "  %-42s %s\n" "golden-image build <version>" "Build golden image"
   printf "  %-42s %s\n" "golden-image rebuild <version>" "Rebuild golden image"
   printf "  %-42s %s\n" "agent list" "List agents"
@@ -18,194 +24,687 @@ usage() {
   printf "  %-42s %s\n" "agent logs <name>" "Follow agent journal"
   printf "  %-42s %s\n" "agent setup <name>" "Run hermes setup"
   printf "  %-42s %s\n" "agent gateway up|down <name>" "Start/stop the Hermes gateway"
-  printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + revoke peer"
+  printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + remove peer"
+  echo ""
+  echo "Host:"
   printf "  %-42s %s\n" "check [--fix]" "Check host readiness (auto-fix with --fix)"
   exit 0
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOTENV="${ROOT}/.env"
-AGENTS_DIR="${ROOT}/.agents"
-COMPOSE_FILE="${ROOT}/compose.yml"
-COOKIE_JAR=$(mktemp /tmp/roundtable-cookies.XXXXXX)
-trap 'rm -f "$COOKIE_JAR"' EXIT
+ROUNDTABLE_DIR="${ROOT}/.roundtable"
+CONFIG="${ROOT}/config.yml"
+IP_POOL="${ROUNDTABLE_DIR}/ip-pool"
+FOREIGN_IP_POOL="${ROUNDTABLE_DIR}/foreign-ip-pool"
+PEERS_DIR="${ROUNDTABLE_DIR}/peers"
+VOLUMES_DIR="${ROUNDTABLE_DIR}/volumes"
+CLUSTER_SUBNETS_FILE="${ROUNDTABLE_DIR}/cluster-subnets"
 
-load_env() {
-  [[ -f "$DOTENV" ]] && source "$DOTENV"
-  WG_PASSWORD="${WG_PASSWORD:-}"
-  AGENT_MEMORY="${AGENT_MEMORY:-768MB}"
-  AGENT_CPU="${AGENT_CPU:-1}"
-  UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04}"
-  WG_TOOLS_VER="${WG_TOOLS_VER:-1.0.20210914-1ubuntu4}"
-  CURL_VER="${CURL_VER:-8.5.0-2ubuntu10.9}"
-  CA_CERT_VER="${CA_CERT_VER:-20240203}"
-  WG_HOST_IP="${WG_HOST_IP:-10.10.0.254}"
-  WG_API="http://${WG_HOST_IP}:51821"
-  WG_POOL_ADDRESS="${WG_POOL_ADDRESS:-10.10.1.x}"
+# ── Config helpers ───────────────────────────────────────────────
+
+yq_required() {
+  command -v yq &>/dev/null && return 0
+  echo "Error: yq (mikefarah/yq) not found." >&2
+  echo "  Install: sudo ./roundtable check --fix" >&2
+  exit 1
 }
 
-wg_auth() {
-  [[ -n "$WG_PASSWORD" ]] || { echo "Error: WG_PASSWORD not set in .env" >&2; exit 1; }
-  curl -sf -X POST "${WG_API}/api/session" \
-    -H "Content-Type: application/json" \
-    -d "{\"password\":\"${WG_PASSWORD}\"}" \
-    -c "$COOKIE_JAR" -o /dev/null 2>/dev/null || {
-    echo "Error: wg-easy auth failed. Is wg-easy running? (roundtable wg up)" >&2
+load_config() {
+  yq_required
+  [[ -f "$CONFIG" ]] || {
+    echo "Error: ${CONFIG} not found." >&2
+    echo "  Copy config.example.yml to config.yml and fill in your values." >&2
+    exit 1
+  }
+
+  WG_HOST=$(yq '.network.host // ""' "$CONFIG")
+  WG_INTERFACE=$(yq '.network.wg.interface // "wg0"' "$CONFIG")
+  WG_PORT=$(yq '.network.wg.port // 51820' "$CONFIG")
+  CLUSTER_SUBNET=$(yq '.network.wg.subnets.cluster // "10.0.0.0/8"' "$CONFIG")
+  AGENTS_SUBNET=$(yq '.network.wg.subnets.agents // "10.0.1.0/24"' "$CONFIG")
+  FOREIGN_SUBNET=$(yq '.network.wg.subnets.foreign // "10.0.2.0/24"' "$CONFIG")
+  PERSISTENT_KEEPALIVE=$(yq '.network.wg.opts.persistent_keepalive // 25' "$CONFIG")
+  AGENT_CPU=$(yq '.agents.limits.cpu // 1' "$CONFIG")
+  AGENT_MEMORY=$(yq '.agents.limits.memory // "768MB"' "$CONFIG")
+  UBUNTU_IMAGE=$(yq '."golden-image".base // "ubuntu:24.04"' "$CONFIG")
+}
+
+# ── State directory helpers ──────────────────────────────────────
+
+init_state_dir() {
+  mkdir -p "$PEERS_DIR" "$VOLUMES_DIR"
+
+  if [[ ! -f "$IP_POOL" ]]; then
+    local base_ip
+    base_ip=$(echo "$AGENTS_SUBNET" | cut -d. -f1-3)
+    {
+      echo "# Auto-generated. Do not edit manually."
+      echo "# Available IPs (uncommented) above allocated IPs (prefixed with #)."
+      for i in $(seq 2 254); do
+        echo "${base_ip}.${i}"
+      done
+    } > "$IP_POOL"
+  fi
+
+  if [[ ! -f "$FOREIGN_IP_POOL" ]]; then
+    local foreign_base
+    foreign_base=$(echo "$FOREIGN_SUBNET" | cut -d. -f1-3)
+    {
+      echo "# Auto-generated. Do not edit manually."
+      echo "# Available IPs (uncommented) above allocated IPs (prefixed with #)."
+      for i in $(seq 2 254); do
+        echo "${foreign_base}.${i}"
+      done
+    } > "$FOREIGN_IP_POOL"
+  fi
+
+  touch "$CLUSTER_SUBNETS_FILE"
+}
+
+ip_pool_allocate() {
+  local pool_file="$1"
+  local line_num ip
+  line_num=$(grep -n -v '^#' "$pool_file" 2>/dev/null | head -1 | cut -d: -f1)
+  if [[ -z "$line_num" ]]; then
+    echo "Error: no available IPs in pool (${pool_file})" >&2
+    exit 1
+  fi
+  ip=$(sed -n "${line_num}p" "$pool_file")
+  sed -i "${line_num}s/^/#/" "$pool_file"
+  echo "$ip"
+}
+
+ip_pool_free() {
+  local pool_file="$1" ip="$2"
+  sed -i "s/^#${ip}$/${ip}/" "$pool_file"
+}
+
+peer_record_path() { local name="$1" type="$2"; echo "${PEERS_DIR}/${name}.${type}.yml"; }
+
+peer_config_path() { local name="$1" type="$2"; echo "${PEERS_DIR}/${name}.${type}.conf"; }
+
+peer_record_create() {
+  local name="$1" type="$2" record_path
+  record_path=$(peer_record_path "$name" "$type")
+  cat > "$record_path"
+}
+
+peer_record_read_value() {
+  local name="$1" type="$2" key="$3"
+  local record_path; record_path=$(peer_record_path "$name" "$type")
+  [[ -f "$record_path" ]] || { echo "Error: ${type} peer '${name}' not found" >&2; exit 1; }
+  yq ".${key} // \"\"" "$record_path"
+}
+
+peer_record_delete() { local name="$1" type="$2"; rm -f "$(peer_record_path "$name" "$type")"; }
+
+subnet_in_list() {
+  local subnet="$1"
+  [[ -f "$CLUSTER_SUBNETS_FILE" ]] && grep -qxF "$subnet" "$CLUSTER_SUBNETS_FILE" 2>/dev/null
+}
+
+subnet_list_add() { echo "$1" >> "$CLUSTER_SUBNETS_FILE"; }
+
+subnet_list_remove() {
+  local subnet="$1"
+  if [[ -f "$CLUSTER_SUBNETS_FILE" ]]; then
+    grep -vxF "$subnet" "$CLUSTER_SUBNETS_FILE" > "${CLUSTER_SUBNETS_FILE}.tmp" && \
+      mv "${CLUSTER_SUBNETS_FILE}.tmp" "$CLUSTER_SUBNETS_FILE"
+  fi
+}
+
+# ── WireGuard helpers ────────────────────────────────────────────
+
+wg_ensure_installed() {
+  command -v wg &>/dev/null || {
+    echo "Error: wireguard-tools not installed. Run: sudo ./roundtable check --fix" >&2
     exit 1
   }
 }
 
+wg_ensure_interface() {
+  if ! ip link show "$WG_INTERFACE" &>/dev/null; then
+    echo "Error: ${WG_INTERFACE} does not exist. Run: roundtable wg init" >&2
+    exit 1
+  fi
+}
+
+wg_add_peer() {
+  local pubkey="$1" allowed_ips="$2" endpoint="$3" keepalive="${4:-25}"
+  wg set "$WG_INTERFACE" peer "$pubkey" allowed-ips "$allowed_ips" endpoint "$endpoint" persistent-keepalive "$keepalive"
+}
+
+wg_remove_peer() {
+  local pubkey="$1"
+  wg set "$WG_INTERFACE" peer "$pubkey" remove 2>/dev/null || true
+}
+
+wg_get_own_pubkey() {
+  if [[ -f /etc/wireguard/publickey ]]; then
+    cat /etc/wireguard/publickey
+  elif [[ -f "/etc/wireguard/${WG_INTERFACE}.conf" ]]; then
+    grep -oP 'PrivateKey = \K.*' "/etc/wireguard/${WG_INTERFACE}.conf" | wg pubkey 2>/dev/null || true
+  else
+    echo ""
+  fi
+}
+
+# ── Command implementations ──────────────────────────────────────
+
 cmd_wg() {
   local sub="${1:-}"; shift 2>/dev/null || true
   case "$sub" in
-    up)    docker compose -f "$COMPOSE_FILE" up -d wg-easy ;;
-    down)  docker compose -f "$COMPOSE_FILE" down ;;
-    logs)  exec docker compose -f "$COMPOSE_FILE" logs -f wg-easy ;;
-    peer)  cmd_wg_peer "$@" ;;
-    host)  cmd_wg_host "$@" ;;
-    *)     usage ;;
+    up)     cmd_wg_up ;;
+    down)   cmd_wg_down ;;
+    init)   cmd_wg_init "$@" ;;
+    peer)   cmd_wg_peer "$@" ;;
+    invite) cmd_wg_invite ;;
+    join)   cmd_wg_join "$@" ;;
+    leave)  cmd_wg_leave "$@" ;;
+    peers)  cmd_wg_peers ;;
+    *)      usage ;;
   esac
+}
+
+cmd_wg_init() {
+  local force=false
+  [[ "${1:-}" == "--force" ]] && force=true
+
+  load_config
+  wg_ensure_installed
+
+  # Check if already initialized
+  if ip link show "$WG_INTERFACE" &>/dev/null; then
+    if $force; then
+      echo "==> Tearing down existing ${WG_INTERFACE} (--force)..." >&2
+      wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+      systemctl disable "wg-quick@${WG_INTERFACE}" 2>/dev/null || true
+    else
+      echo "${WG_INTERFACE} already exists. Use --force to re-initialize." >&2
+      return 0
+    fi
+  fi
+
+  [[ -n "$WG_HOST" ]] || { echo "Error: network.host not set in config" >&2; exit 1; }
+
+  local host_ip
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+  # host_ip is now the bare IP (e.g. 10.0.1.1) without CIDR suffix
+
+  echo "==> Initializing host WireGuard mesh..." >&2
+  echo "    Interface: ${WG_INTERFACE}" >&2
+  echo "    Mesh IP:   ${host_ip}/24 (${AGENTS_SUBNET})" >&2
+  echo "    Port:      ${WG_PORT}" >&2
+  echo "    Host:      ${WG_HOST}" >&2
+
+  # Generate keys if missing
+  if [[ ! -f /etc/wireguard/privatekey ]] || [[ ! -f /etc/wireguard/publickey ]]; then
+    echo "==> Generating host WireGuard keypair..." >&2
+    umask 077
+    wg genkey | tee /etc/wireguard/privatekey | wg pubkey > /etc/wireguard/publickey
+    umask 022
+  fi
+
+  # Write wg config
+  local wg_conf="/etc/wireguard/${WG_INTERFACE}.conf"
+  cat > "$wg_conf" <<WGCONF
+[Interface]
+Address = ${host_ip}
+PrivateKey = $(cat /etc/wireguard/privatekey)
+ListenPort = ${WG_PORT}
+SaveConfig = false
+
+# Agent and cluster peers are managed by 'roundtable wg peer' / 'roundtable wg join'
+WGCONF
+
+  # Enable IP forwarding
+  sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+  if ! grep -q 'net.ipv4.ip_forward=1' /etc/sysctl.d/99-roundtable.conf 2>/dev/null; then
+    echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-roundtable.conf
+  fi
+
+  # Init state directory
+  init_state_dir
+
+  # Check for port conflict before bringing up wg0
+  if ss -tulpn | grep -q ":${WG_PORT} "; then
+    local conflict
+    conflict=$(ss -tulpn "sport = :${WG_PORT}" 2>/dev/null | grep -v "wg0" | head -1)
+    echo "⚠️  Port ${WG_PORT}/udp is already in use:" >&2
+    echo "    ${conflict}" >&2
+    echo "    Run 'docker stop cli-roundtable-wg-easy-1' if it's a leftover wg-easy container." >&2
+    echo "    Or set a different port in config.yml (network.wg.port)." >&2
+    exit 1
+  fi
+
+  echo "==> Bringing up ${WG_INTERFACE}..." >&2
+  wg-quick up "$WG_INTERFACE" || { echo "Failed to bring up ${WG_INTERFACE}." >&2; exit 1; }
+
+  # Enable persistent via systemd
+  systemctl enable "wg-quick@${WG_INTERFACE}" 2>/dev/null || true
+
+  echo "==> Host WireGuard mesh initialized." >&2
+  echo "    Interface: ${WG_INTERFACE}" >&2
+  echo "    Mesh IP:   ${host_ip} (${AGENTS_SUBNET})" >&2
+  echo "    Listen:    ${WG_PORT}/udp" >&2
+  echo "    Service:   wg-quick@${WG_INTERFACE} (enabled)" >&2
+  echo "    State:     ${ROUNDTABLE_DIR}" >&2
+}
+
+cmd_wg_up() {
+  load_config
+  wg_ensure_installed
+  wg-quick up "$WG_INTERFACE" 2>/dev/null || { echo "${WG_INTERFACE} not configured. Run: roundtable wg init" >&2; exit 1; }
+  echo "${WG_INTERFACE} is up." >&2
+}
+
+cmd_wg_down() {
+  load_config
+  wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+  echo "${WG_INTERFACE} is down." >&2
 }
 
 cmd_wg_peer() {
   local action="${1:-}"; shift 2>/dev/null || true
-  wg_auth
   case "$action" in
-    new)
-      local name="${1:?Usage: roundtable wg peer new <name>}"
-      local existing; existing=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-      if echo "$existing" | grep -q "\"name\":\"${name}\""; then
-        echo "Peer '${name}' already exists:" >&2
-        cmd_wg_peer config "$name"
-        return
-      fi
-      echo "Creating peer '${name}'..." >&2
-      curl -sf -X POST "${WG_API}/api/wireguard/client" \
-        -H "Content-Type: application/json" -b "$COOKIE_JAR" \
-        -d "{\"name\":\"${name}\"}" -o /dev/null
-      cmd_wg_peer config "$name"
-      ;;
-    list)
-      local peers; peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-      echo "$peers" | python3 -c "
-import json, sys
-for p in json.load(sys.stdin):
-    e = '+' if p.get('enabled', True) else '-'
-    print(f'  {e} {(p.get(\"name\") or \"?\").ljust(20)} {p.get(\"address\") or \"?\"}')" 2>/dev/null || echo "$peers"
-      ;;
-    config)
-      local name="${1:?Usage: roundtable wg peer config <name>}"
-      local all_peers
-      all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-      local peer_id
-      peer_id=$(echo "$all_peers" | python3 -c "
-import json,sys
-peers=json.load(sys.stdin)
-for p in peers:
-    if p.get('name') == '$name':
-        print(p.get('id',''))
-        break
-" 2>/dev/null || true)
-      [[ -n "$peer_id" ]] || { echo "Peer '${name}' not found." >&2; exit 1; }
-      local config
-      config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}/configuration" 2>/dev/null)
-      [[ -n "$config" ]] || { echo "Peer '${name}' not found." >&2; exit 1; }
-      echo "$config"
-      ;;
-    *) usage ;;
+    new)    cmd_wg_peer_new "$@" ;;
+    config) cmd_wg_peer_config "$@" ;;
+    rm)     cmd_wg_peer_rm "$@" ;;
+    *)      usage ;;
   esac
 }
 
-cmd_wg_host() {
-  local action="${1:-}"
-  shift 2>/dev/null || true
-  local host_peer="host-vps"
-  local wg_conf="/etc/wireguard/wg-host.conf"
+cmd_wg_peer_new() {
+  local name="" peer_type="foreign"
 
-  case "$action" in
-    up)
-      command -v wg &>/dev/null || { echo "wireguard-tools not installed. Run: sudo ./roundtable check --fix" >&2; exit 1; }
-      wg_auth
-
-      # Create or update the host peer via wg-easy API
-      local existing
-      existing=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-      if ! echo "$existing" | grep -q "\"name\":\"${host_peer}\""; then
-        echo "Creating peer '${host_peer}'..." >&2
-        curl -sf -X POST "${WG_API}/api/wireguard/client" \
-          -H "Content-Type: application/json" -b "$COOKIE_JAR" \
-          -d "{\"name\":\"${host_peer}\"}" -o /dev/null
-      fi
-
-      # Fetch config by ID
-      local all_peers
-      all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-      local peer_id
-      peer_id=$(echo "$all_peers" | python3 -c "
-import json,sys
-peers=json.load(sys.stdin)
-for p in peers:
-    if p.get('name') == '${host_peer}':
-        print(p.get('id',''))
-        break
-" 2>/dev/null || true)
-
-      if [[ -z "$peer_id" ]]; then
-        echo "Error: could not find peer '${host_peer}' after creation." >&2
+  # Parse args: --type agent|foreign (default: foreign), positional name
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type)
+        peer_type="${2:-foreign}"
+        shift 2
+        ;;
+      --type=*)
+        peer_type="${1#*=}"
+        shift
+        ;;
+      -*)
+        echo "Error: unknown flag $1" >&2
         exit 1
-      fi
+        ;;
+      *)
+        name="$1"
+        shift
+        ;;
+    esac
+  done
 
-      local config
-      config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}/configuration" 2>/dev/null || true)
-      if [[ -z "$config" ]]; then
-        echo "Error: could not fetch config for '${host_peer}'." >&2
-        exit 1
-      fi
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer new [--type agent|foreign] <name>" >&2; exit 1; }
+  [[ "$peer_type" =~ ^(agent|foreign)$ ]] || { echo "Error: --type must be 'agent' or 'foreign'" >&2; exit 1; }
 
-      echo "$config" > "$wg_conf"
-      local host_ip
-      host_ip=$(echo "$config" | grep Address | awk '{print $3}' | cut -d/ -f1)
-      echo "Host WireGuard interface is up." >&2
-      echo "  Mesh IP: ${host_ip}" >&2
-      systemctl enable wg-quick@wg-host 2>/dev/null || true
-      wg-quick up wg-host 2>/dev/null || { echo "Failed to bring up wg-host." >&2; exit 1; }
-      echo "  Config:  ${wg_conf}" >&2
-      echo "  Service: wg-quick@wg-host (enabled)" >&2
-      ;;
-    down)
-      echo "Bringing down host WireGuard tunnel..." >&2
-      wg-quick down wg-host 2>/dev/null || true
-      systemctl disable wg-quick@wg-host 2>/dev/null || true
-      echo "Host WireGuard tunnel is down." >&2
-      ;;
-    ip)
-      local host_ip
-      host_ip=$(cat "$wg_conf" 2>/dev/null | grep Address | awk '{print $3}' | cut -d/ -f1)
-      if [[ -n "$host_ip" ]]; then
-        echo "$host_ip"
+  load_config
+  wg_ensure_interface
+
+  init_state_dir
+
+  # Check if peer already exists
+  local record_path; record_path=$(peer_record_path "$name" "$peer_type")
+  if [[ -f "$record_path" ]]; then
+    echo "Peer '${name}' already exists:" >&2
+    cmd_wg_peer_config "$name"
+    return
+  fi
+
+  # Pick pool based on type
+  local pool_file
+  if [[ "$peer_type" == "foreign" ]]; then
+    pool_file="$FOREIGN_IP_POOL"
+  else
+    pool_file="$IP_POOL"
+  fi
+
+  # Allocate IP from correct pool
+  local peer_ip
+  peer_ip=$(ip_pool_allocate "$pool_file")
+  echo "    IP: ${peer_ip} (${peer_type})" >&2
+
+  # Generate keypair
+  local peer_privkey peer_pubkey
+  peer_privkey=$(wg genkey)
+  peer_pubkey=$(echo "$peer_privkey" | wg pubkey)
+
+  # Read host's public key
+  local host_pubkey
+  host_pubkey=$(wg_get_own_pubkey)
+  [[ -n "$host_pubkey" ]] || { echo "Error: could not read host public key" >&2; exit 1; }
+
+  # Host mesh IP (from agents subnet, always)
+  local host_ip
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+
+  # Add peer to host wg0
+  wg_add_peer "$peer_pubkey" "${peer_ip}/32" "${host_ip}:${WG_PORT}"
+
+  # Persist peer record (YAML)
+  {
+    echo "name: ${name}"
+    echo "ip: ${peer_ip}"
+    echo "public_key: ${peer_pubkey}"
+    echo "type: ${peer_type}"
+    echo "created: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$record_path"
+
+  if [[ "$peer_type" == "agent" ]]; then
+    # ── Agent config: save to .roundtable/peers/<name>.agent.conf ──
+    local agent_conf_path; agent_conf_path=$(peer_config_path "$name" "agent")
+    cat > "$agent_conf_path" <<WGOCONF
+[Interface]
+Address = ${peer_ip}/32
+PrivateKey = ${peer_privkey}
+DNS = 1.1.1.1
+# Route the WireGuard endpoint IP via eth0 to prevent routing loops
+# (CLUSTER_SUBNET covers the endpoint IP, which would otherwise be routed back through wg0)
+PostUp = ip route add ${host_ip}/32 dev eth0 2>/dev/null || true
+
+[Peer]
+PublicKey = ${host_pubkey}
+AllowedIPs = ${CLUSTER_SUBNET}
+Endpoint = ${host_ip}:${WG_PORT}
+PersistentKeepalive = ${PERSISTENT_KEEPALIVE}
+WGOCONF
+  else
+    # ── Foreign/laptop config: clean WireGuard config ──
+    local foreign_conf_path; foreign_conf_path=$(peer_config_path "$name" "foreign")
+    cat > "$foreign_conf_path" <<FOREIGN_CONFIG
+[Interface]
+Address = ${peer_ip}/32
+PrivateKey = ${peer_privkey}
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = ${host_pubkey}
+AllowedIPs = ${CLUSTER_SUBNET}
+Endpoint = ${WG_HOST}:${WG_PORT}
+PersistentKeepalive = ${PERSISTENT_KEEPALIVE}
+FOREIGN_CONFIG
+    cat "$foreign_conf_path"
+  fi
+}
+
+cmd_wg_peer_config() {
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer config [--type agent|foreign|host] <name>" >&2; exit 1; }
+
+  load_config
+  wg_ensure_interface
+
+  local record_path; record_path=$(peer_record_path "$name" "$peer_type")
+  [[ -f "$record_path" ]] || { echo "Error: ${peer_type} peer '${name}' not found" >&2; exit 1; }
+
+  if [[ "$peer_type" == "host" ]]; then
+    local peer_subnet peer_endpoint peer_pubkey
+    peer_subnet=$(yq '.subnets.agents // ""' "$record_path")
+    peer_endpoint=$(yq '.endpoint // ""' "$record_path")
+    peer_pubkey=$(yq '.public_key // ""' "$record_path")
+    echo "# Cluster peer: ${name}"
+    echo "# Subnets:     ${peer_subnet}"
+    echo "# Endpoint:    ${peer_endpoint}"
+    wg show "$WG_INTERFACE" | grep -A2 "peer: ${peer_pubkey}" 2>/dev/null || echo "(peer not currently connected)"
+  elif [[ "$peer_type" == "agent" ]]; then
+    local agent_conf_path; agent_conf_path=$(peer_config_path "$name" "agent")
+    if [[ -f "$agent_conf_path" ]]; then
+      cat "$agent_conf_path"
+    else
+      echo "Error: no config saved for agent '${name}'" >&2
+      exit 1
+    fi
+  elif [[ "$peer_type" == "foreign" ]]; then
+    local foreign_conf_path; foreign_conf_path=$(peer_config_path "$name" "foreign")
+    if [[ -f "$foreign_conf_path" ]]; then
+      cat "$foreign_conf_path"
+    else
+      echo "Error: no config saved for foreign peer '${name}'" >&2
+      exit 1
+    fi
+  else
+    echo "Error: unknown peer type '${peer_type}' for '${name}'" >&2
+    exit 1
+  fi
+}
+
+cmd_wg_peer_rm() {
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer rm [--type agent|foreign|host] <name>" >&2; exit 1; }
+
+  load_config
+  wg_ensure_interface
+
+  local record_path; record_path=$(peer_record_path "$name" "$peer_type")
+  [[ -f "$record_path" ]] || { echo "Error: ${peer_type} peer '${name}' not found" >&2; exit 1; }
+
+  local peer_pubkey peer_ip
+  peer_pubkey=$(yq '.public_key // ""' "$record_path")
+  peer_ip=$(yq '.ip // ""' "$record_path")
+
+  echo "==> Removing WireGuard peer '${name}' (${peer_type})..." >&2
+
+  wg_remove_peer "$peer_pubkey"
+
+  # Free IP from the correct pool
+  local pool_file
+  if [[ "$peer_type" == "agent" ]]; then
+    pool_file="$IP_POOL"
+  elif [[ "$peer_type" == "foreign" ]]; then
+    pool_file="$FOREIGN_IP_POOL"
+  fi
+
+  if [[ -n "${pool_file:-}" && -n "$peer_ip" ]]; then
+    ip_pool_free "$pool_file" "$peer_ip"
+    echo "    IP ${peer_ip} freed" >&2
+  fi
+
+  peer_record_delete "$name" "$peer_type"
+
+  # Clean up saved config if it exists
+  local conf_path; conf_path=$(peer_config_path "$name" "$peer_type" 2>/dev/null || echo "")
+  if [[ -n "$conf_path" && -f "$conf_path" ]]; then
+    rm -f "$conf_path"
+  fi
+
+  echo "    Peer removed." >&2
+}
+
+cmd_wg_invite() {
+  load_config
+  [[ -n "$WG_HOST" ]] || { echo "Error: network.host not set in config" >&2; exit 1; }
+
+  local pubkey
+  pubkey=$(wg_get_own_pubkey)
+  [[ -n "$pubkey" ]] || { echo "Error: ${WG_INTERFACE} not initialized. Run: roundtable wg init" >&2; exit 1; }
+
+  # Resolve WG_HOST to IP if it's a domain
+  local endpoint_ip="$WG_HOST"
+  if ! echo "$WG_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    endpoint_ip=$(host "$WG_HOST" 2>/dev/null | grep "has address" | head -1 | awk '{print $NF}')
+    [[ -n "$endpoint_ip" ]] || endpoint_ip="$WG_HOST"
+  fi
+
+  cat <<INVITE
+# wg invite
+public_key: ${pubkey}
+endpoint: ${endpoint_ip}:${WG_PORT}
+agents: ${AGENTS_SUBNET}
+foreign: ${FOREIGN_SUBNET}
+cluster: ${CLUSTER_SUBNET}
+INVITE
+}
+
+cmd_wg_join() {
+  local name="${1:?Usage: roundtable wg join <name> <invite-file>}"
+  local invite_file="${2:?Usage: roundtable wg join <name> <invite-file>}"
+  load_config
+  wg_ensure_interface
+
+  [[ -f "$invite_file" ]] || { echo "Error: invite file '${invite_file}' not found" >&2; exit 1; }
+  yq_required
+
+  # Parse invite YAML
+  local remote_pubkey remote_endpoint remote_agents remote_foreign remote_cluster
+  remote_pubkey=$(yq '.public_key // ""' "$invite_file")
+  remote_endpoint=$(yq '.endpoint // ""' "$invite_file")
+  remote_agents=$(yq '.agents // ""' "$invite_file")
+  remote_foreign=$(yq '.foreign // ""' "$invite_file")
+  remote_cluster=$(yq '.cluster // ""' "$invite_file")
+
+  [[ -n "$remote_pubkey" ]] || { echo "Error: invite file missing 'public_key'" >&2; exit 1; }
+  [[ -n "$remote_endpoint" ]] || { echo "Error: invite file missing 'endpoint'" >&2; exit 1; }
+  [[ -n "$remote_agents" ]] || { echo "Error: invite file missing 'agents'" >&2; exit 1; }
+
+  # Check if already joined
+  local record_path; record_path=$(peer_record_path "$name" "host")
+  if [[ -f "$record_path" ]]; then
+    echo "Already connected to peer '${name}'. Use 'leave' first to re-join." >&2
+    return 0
+  fi
+
+  # Build allowed-ips from agents + foreign subnets
+  local allowed_ips="${remote_agents}"
+  [[ -n "$remote_foreign" ]] && allowed_ips="${allowed_ips},${remote_foreign}"
+
+  echo "==> Joining cluster peer '${name}'..." >&2
+  echo "    Endpoint: ${remote_endpoint}" >&2
+  echo "    Allowed:  ${allowed_ips}" >&2
+
+  # Warn about subnet overlap (simple prefix check)
+  if echo "$remote_agents" | grep -qE "^$(echo "$AGENTS_SUBNET" | cut -d. -f1-2)\."; then
+    echo "    ⚠️  Warning: remote agents subnet '${remote_agents}' may overlap with local '${AGENTS_SUBNET}'" >&2
+  fi
+
+  # Add peer to host wg0
+  wg_add_peer "$remote_pubkey" "$allowed_ips" "$remote_endpoint"
+
+  # Persist cluster peer record (YAML)
+  {
+    echo "name: ${name}"
+    echo "type: host"
+    echo "public_key: ${remote_pubkey}"
+    echo "endpoint: ${remote_endpoint}"
+    echo "subnets:"
+    echo "  agents: ${remote_agents}"
+    [[ -n "$remote_foreign" ]] && echo "  foreign: ${remote_foreign}"
+    echo "created: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$record_path"
+
+  # Track subnets in cluster-subnets list
+  subnet_list_add "$remote_agents"
+  [[ -n "$remote_foreign" ]] && subnet_list_add "$remote_foreign"
+
+  echo "==> Joined cluster peer '${name}'." >&2
+  echo "    ✅ One-way connection established — ${name} can reach your agents." >&2
+  echo "    ℹ️  You need to also join ${name}'s mesh for bidirectional connectivity." >&2
+  echo "       Run: roundtable wg invite > my-invite.yml" >&2
+  echo "       (send this file to ${name})" >&2
+}
+
+cmd_wg_leave() {
+  local name="${1:?Usage: roundtable wg leave <name>}"
+  load_config
+  wg_ensure_interface
+
+  local record_path; record_path=$(peer_record_path "$name" "host")
+  if [[ ! -f "$record_path" ]]; then
+    echo "Error: peer '${name}' not found. Use 'wg peers' to list connected peers." >&2
+    exit 1
+  fi
+
+  local peer_pubkey
+  peer_pubkey=$(yq '.public_key // ""' "$record_path")
+
+  echo "==> Leaving cluster peer '${name}'..." >&2
+
+  wg_remove_peer "$peer_pubkey"
+
+  # Read subnets before deleting the record
+  local agents_sub foreign_sub
+  agents_sub=$(yq '.subnets.agents // ""' "$record_path")
+  foreign_sub=$(yq '.subnets.foreign // ""' "$record_path")
+
+  peer_record_delete "$name" "host"
+
+  [[ -n "$agents_sub" ]] && subnet_list_remove "$agents_sub"
+  [[ -n "$foreign_sub" ]] && subnet_list_remove "$foreign_sub"
+
+  echo "    Peer removed. Only affects this side." >&2
+  echo "    ℹ️  '${name}' still has you as a peer until they run: roundtable wg leave ${HOSTNAME}" >&2
+}
+
+cmd_wg_peers() {
+  load_config
+  wg_ensure_interface
+
+  printf "%-20s %-18s %-10s %s\n" "NAME" "IP/SUBNET" "TYPE" "STATUS"
+  printf "%-20s %-18s %-10s %s\n" "----" "---------" "----" "------"
+
+  local active_peers
+  active_peers=$(wg show "$WG_INTERFACE" peers 2>/dev/null || echo "")
+
+  if [[ -d "$PEERS_DIR" ]]; then
+    for record in "$PEERS_DIR"/*.yml; do
+      [[ -f "$record" ]] || continue
+
+      local record_name record_type record_ip record_agents record_pubkey
+      record_name=$(yq '.name // "?"' "$record")
+      record_type=$(yq '.type // "?"' "$record")
+      record_ip=$(yq '.ip // ""' "$record")
+      record_agents=$(yq '.subnets.agents // ""' "$record")
+      record_pubkey=$(yq '.public_key // ""' "$record")
+
+      # Skip records where key field is missing
+      [[ -n "$record_name" && "$record_name" != "null" ]] || continue
+
+      local display_ip="${record_ip:-${record_agents:-?}}"
+      local status="unknown"
+      if [[ -n "$record_pubkey" ]] && echo "$active_peers" | grep -qF "$record_pubkey"; then
+        status="active"
       else
-        echo "Host WireGuard not configured. Run: sudo ./roundtable wg host up" >&2
-        exit 1
+        status="inactive"
       fi
-      ;;
-    *)
-      echo "Usage: roundtable wg host up|down|ip" >&2
-      return 1
-      ;;
-  esac
+
+      printf "%-20s %-18s %-10s %s\n" "$record_name" "$display_ip" "$record_type" "$status"
+    done
+  fi
 }
+
+# ── Golden image ─────────────────────────────────────────────────
 
 cmd_golden_image() {
   local sub="${1:-}"; shift 2>/dev/null || true
   local version="${1:-main}"
+  load_config
 
   [[ "$sub" =~ ^(build|rebuild)$ ]] || usage
 
   if [ "$sub" = "rebuild" ]; then
     lxc image alias delete roundtable-agent 2>/dev/null || true
     lxc image delete roundtable-agent 2>/dev/null || true
-    lxc image alias delete hermes-agent 2>/dev/null || true
-    lxc image delete hermes-agent 2>/dev/null || true
   fi
 
   if lxc image alias list 2>/dev/null | grep -q roundtable-agent; then
@@ -216,7 +715,6 @@ cmd_golden_image() {
   echo "==> Building golden image (Hermes ${version})..." >&2
   lxc launch "${UBUNTU_IMAGE}" roundtable-tmp
 
-  # Wait for network (up to 60s)
   echo -n "==> Waiting for network..." >&2
   for i in $(seq 1 60); do
     if lxc exec roundtable-tmp -- ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
@@ -225,9 +723,12 @@ cmd_golden_image() {
     echo -n "." >&2; sleep 1
   done
 
-  echo "==> Installing wireguard-tools..." >&2
+  echo "==> Installing dependencies..." >&2
   lxc exec roundtable-tmp -- apt-get update -qq
-  lxc exec roundtable-tmp -- apt-get install -y -qq "wireguard-tools=${WG_TOOLS_VER}" "curl=${CURL_VER}" "ca-certificates=${CA_CERT_VER}"
+  lxc exec roundtable-tmp -- apt-get install -y -qq wireguard-tools curl ca-certificates
+
+  echo "==> Installing yq (mikefarah/yq v4.44.6)..." >&2
+  lxc exec roundtable-tmp -- bash -c "curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64 -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq"
 
   echo "==> Installing Hermes Agent (${version})..." >&2
   lxc exec roundtable-tmp -- bash -c "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-setup --branch \"${version}\""
@@ -244,6 +745,8 @@ cmd_golden_image() {
   echo "Golden image 'roundtable-agent' (Hermes ${version}) published." >&2
   lxc image list roundtable-agent
 }
+
+# ── Agent lifecycle ──────────────────────────────────────────────
 
 agent_lxc_name() { echo "roundtable-${1}"; }
 
@@ -270,13 +773,14 @@ cmd_agent() {
 cmd_agent_create() {
   local name="${1:?Usage: roundtable agent create <name>}"
   local lxc_name; lxc_name=$(agent_lxc_name "$name")
+  load_config
 
   if ! lxc image alias list 2>/dev/null | grep -q roundtable-agent; then
     echo "No golden image. Run: roundtable golden-image build <version>" >&2
     exit 1
   fi
 
-  local agent_dir="${AGENTS_DIR}/${name}"
+  local agent_dir="${VOLUMES_DIR}/${name}"
   mkdir -p "${agent_dir}/volume"
 
   echo "==> Launching agent '${name}' (${lxc_name})..." >&2
@@ -290,32 +794,13 @@ cmd_agent_create() {
 
   sleep 5
 
+  # Create WireGuard peer
   echo "==> Setting up WireGuard peer..." >&2
-  local wg_config=""
-  wg_auth 2>/dev/null || true
-  if [[ -n "$WG_PASSWORD" ]]; then
-    local existing
-    existing=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-    if ! echo "$existing" | grep -q "\"name\":\"${name}\""; then
-      curl -sf -X POST "${WG_API}/api/wireguard/client" \
-        -H "Content-Type: application/json" -b "$COOKIE_JAR" \
-        -d "{\"name\":\"${name}\"}" -o /dev/null 2>/dev/null || true
-    fi
-    local all_peers
-    all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-    local peer_id
-    peer_id=$(echo "$all_peers" | python3 -c "
-import json,sys
-peers=json.load(sys.stdin)
-for p in peers:
-    if p.get('name') == '$name':
-        print(p['id'])
-        break
-" 2>/dev/null || true)
-    if [[ -n "$peer_id" ]]; then
-      wg_config=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}/configuration" 2>/dev/null || true)
-    fi
-  fi
+  local wg_config
+  wg_config=$(cmd_wg_peer_new --type agent "$name") || {
+    echo "Warning: WireGuard peer creation failed. Agent created without VPN." >&2
+    wg_config=""
+  }
 
   if [[ -n "$wg_config" ]]; then
     echo "$wg_config" | lxc exec "$lxc_name" -- tee /etc/wireguard/wg0.conf > /dev/null
@@ -324,7 +809,7 @@ for p in peers:
   fi
 
   echo "==> Agent '${name}' ready." >&2
-  echo "  Dashboard: http://${WG_POOL_ADDRESS}:9119  (check IP: roundtable wg peer list)" >&2
+  echo "  Mesh IP:  $(echo "$wg_config" | grep Address | head -1 | awk '{print $3}')" >&2
   echo "  Shell:     roundtable agent shell ${name}" >&2
   echo "  Setup:     roundtable agent setup ${name}" >&2
   lxc list -c n,s,4 "$lxc_name"
@@ -357,33 +842,21 @@ cmd_agent_gateway() {
 cmd_agent_delete() {
   local name="${1:?Usage: roundtable agent delete <name>}"
   local lxc_name; lxc_name=$(agent_lxc_name "$name")
+  load_config
 
   echo "Removing agent '${name}' (${lxc_name})..." >&2
 
-  wg_auth 2>/dev/null || true
-  if [[ -n "$WG_PASSWORD" ]]; then
-    local all_peers
-    all_peers=$(curl -sf -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client" 2>/dev/null || echo "[]")
-    local peer_id
-    peer_id=$(echo "$all_peers" | python3 -c "
-import json,sys
-peers=json.load(sys.stdin)
-for p in peers:
-    if p.get('name') == '$name':
-        print(p.get('id',''))
-        break
-" 2>/dev/null || true)
-    if [[ -n "$peer_id" ]]; then
-      curl -sf -X DELETE -b "$COOKIE_JAR" "${WG_API}/api/wireguard/client/${peer_id}" -o /dev/null 2>/dev/null || true
-    fi
-  fi
+  echo "  Releasing WireGuard peer..." >&2
+  cmd_wg_peer_rm --type agent "$name" 2>/dev/null || true
 
   lxc stop "$lxc_name" 2>/dev/null || true
   lxc delete "$lxc_name" 2>/dev/null || true
-  rm -rf "${AGENTS_DIR}/${name}"
+  rm -rf "${VOLUMES_DIR}/${name}"
 
   echo "Agent '${name}' deleted." >&2
 }
+
+# ── Host check ───────────────────────────────────────────────────
 
 cmd_check() {
   local force=false
@@ -408,32 +881,24 @@ cmd_check() {
     fi
   }
 
-  if command -v docker &>/dev/null; then
-    local docker_ver
-    docker_ver=$(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
-    if docker --version 2>/dev/null | grep -qi "snap"; then
-      check "Docker (apt, not snap)" fail "installed via snap — must use apt"
-      errors+=("docker-snap")
-      fixes+=("snap remove docker && apt install -y docker.io docker-compose-v2")
-    elif [[ -n "$docker_ver" ]]; then
-      check "Docker (apt, not snap)" ok "${docker_ver}"
-    else
-      check "Docker (apt, not snap)" ok "installed"
-    fi
+  # yq (new dependency)
+  if command -v yq &>/dev/null; then
+    local yq_ver
+    yq_ver=$(yq --version 2>/dev/null | grep -oP 'v\S+' || echo "installed")
+    check "yq (mikefarah/yq)" ok "${yq_ver}"
   else
-    check "Docker (apt, not snap)" fail "not found"
-    errors+=("docker")
-    fixes+=("apt install -y docker.io docker-compose-v2")
+    check "yq (mikefarah/yq)" fail "not found"
+    errors+=("yq")
+    fixes+=("curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64 -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq")
   fi
 
-  if docker compose version &>/dev/null; then
-    local compose_ver
-    compose_ver=$(docker compose version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)
-    check "Docker Compose v2" ok "${compose_ver:-installed}"
+  # Config
+  if [[ -f "$CONFIG" ]]; then
+    check "Config (config.yml)" ok "present"
   else
-    check "Docker Compose v2" fail "not found"
-    errors+=("docker-compose")
-    fixes+=("apt install -y docker-compose-v2")
+    check "Config (config.yml)" fail "not found"
+    errors+=("config")
+    fixes+=("cp config.example.yml config.yml && vi config.yml")
   fi
 
   if command -v lxc &>/dev/null; then
@@ -456,7 +921,7 @@ cmd_check() {
     elif [[ -n "$storage_info" ]]; then
       local pool_type
       pool_type=$(echo "$storage_info" | awk '{print $4}')
-      check "LXD storage (dir)" fail "found ${pool_type:-unknown} backend — needs dir"
+      check "LXD storage (dir)" fail "found ${pool_type:-unknown} backend"
       errors+=("lxd-storage")
       fixes+=("lxd init --auto --storage-backend dir")
     else
@@ -471,9 +936,13 @@ cmd_check() {
   if iptables -L DOCKER-USER -n -v 2>/dev/null | grep -q "lxdbr0"; then
     check "iptables (DOCKER-USER)" ok "lxdbr0 FORWARD accepted"
   else
-    check "iptables (DOCKER-USER)" fail "lxdbr0 not in DOCKER-USER chain"
-    errors+=("iptables")
-    fixes+=("iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT")
+    if iptables -L DOCKER-USER -n 2>/dev/null | grep -q "Chain DOCKER-USER"; then
+      check "iptables (DOCKER-USER)" fail "lxdbr0 not in DOCKER-USER chain"
+      errors+=("iptables")
+      fixes+=("iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT")
+    else
+      check "iptables (DOCKER-USER)" skip "(DOCKER-USER chain doesn't exist)"
+    fi
   fi
 
   local swap_total
@@ -505,7 +974,7 @@ cmd_check() {
     avail_hr=$(numfmt --to=iec "$((avail_kb * 1024))" 2>/dev/null || echo "${avail_kb}KB")
     check "Free disk (>=5GB)" fail "${avail_hr} — too low"
     errors+=("disk")
-    fixes+=("Free up space — see 'docker system prune' or remove old LXD images")
+    fixes+=("Free up space — see 'docker system prune' or delete old LXD images")
   else
     check "Free disk (>=5GB)" fail "could not determine"
   fi
@@ -528,6 +997,42 @@ cmd_check() {
     check "wireguard-tools (wg)" fail "not found"
     errors+=("wireguard-tools")
     fixes+=("apt install -y wireguard-tools")
+  fi
+
+  # Load config for wg interface check (only if available)
+  if command -v yq &>/dev/null && [[ -f "$CONFIG" ]]; then
+    local check_iface
+    check_iface=$(yq '.network.wg.interface // "wg0"' "$CONFIG")
+    if ip link show "$check_iface" &>/dev/null; then
+      check "Host ${check_iface}" ok "interface up"
+    else
+      check "Host ${check_iface}" fail "not configured (run: roundtable wg init)"
+      errors+=("wg0")
+      fixes+=("roundtable wg init")
+    fi
+  else
+    check "Host wg0" skip "(config not available)"
+  fi
+
+  # Check if AppArmor blocks wg-quick IPv4 sockets
+  if command -v aa-status &>/dev/null && aa-status 2>/dev/null | grep -q "wg-quick"; then
+    if [[ -f /etc/apparmor.d/local/wg-quick ]] && grep -q "network inet dgram" /etc/apparmor.d/local/wg-quick 2>/dev/null; then
+      check "AppArmor wg-quick" ok "IPv4 sockets allowed"
+    else
+      check "AppArmor wg-quick" fail "blocks IPv4 sockets"
+      errors+=("apparmor-wg")
+      fixes+=("echo \"network inet dgram,\" >> /etc/apparmor.d/local/wg-quick && apparmor_parser -r /etc/apparmor.d/wg-quick")
+    fi
+  else
+    check "AppArmor wg-quick" skip "(not enabled)"
+  fi
+
+  if [[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" == "1" ]]; then
+    check "IP forwarding" ok "enabled"
+  else
+    check "IP forwarding" fail "disabled"
+    errors+=("ip_forward")
+    fixes+=("sysctl -w net.ipv4.ip_forward=1")
   fi
 
   if host cloud-images.ubuntu.com &>/dev/null 2>&1; then
@@ -561,6 +1066,14 @@ cmd_check() {
           sudo apt-get update -qq 2>/dev/null || true
           eval "sudo $fix -qq" 2>/dev/null || true
         fi
+      elif [[ "$fix" == curl* ]]; then
+        if [[ $EUID -eq 0 ]]; then
+          eval "$fix" 2>/dev/null || true
+        else
+          eval "sudo $fix" 2>/dev/null || true
+        fi
+      elif [[ "$fix" == roundtable* || "$fix" == cp\ .roundtable* ]]; then
+        eval "$fix" 2>/dev/null || true
       elif [[ "$fix" == "dns" ]]; then
         cmd_fix_dns
       else
@@ -629,9 +1142,8 @@ cmd_fix_dns() {
 
   local suggested_dns=""
   local suggestion_msg=""
-
   if echo "$primary_dns" | grep -q ':'; then
-    suggestion_msg="Primary DNS is IPv6 ($primary_dns). Adding explicit IPv4 DNS resolves this in most cases."
+    suggestion_msg="Primary DNS is IPv6 ($primary_dns). Adding explicit IPv4 DNS resolves this."
     if [[ -n "$ipv4_servers" ]]; then
       suggested_dns="$ipv4_servers"
       suggestion_msg+=" Detected IPv4 DNS: $suggested_dns"
@@ -659,27 +1171,25 @@ cmd_fix_dns() {
       echo "$dns_line" >> /etc/systemd/resolved.conf
     fi
     systemctl restart systemd-resolved 2>/dev/null || true
-
     echo "  Restarting systemd-resolved..."
     sleep 1
     if host cloud-images.ubuntu.com &>/dev/null 2>&1; then
       echo "  ✅ DNS resolution restored."
     else
-      echo "  ❌ Still failing. Try: systemctl restart systemd-resolved"
-      echo "     Or check /etc/systemd/resolved.conf manually."
+      echo "  ❌ Still failing."
     fi
   else
     echo "  Skipped. Try: systemctl restart systemd-resolved"
   fi
 }
 
-load_env
+# ── Main dispatch ────────────────────────────────────────────────
 cmd="${1:-help}"; shift 2>/dev/null || true
 
 case "$cmd" in
-  wg)          cmd_wg "$@" ;;
+  wg)           cmd_wg "$@" ;;
   golden-image) cmd_golden_image "$@" ;;
-  agent)       cmd_agent "$@" ;;
-  check)       cmd_check "$@" ;;
-  help|*)      usage ;;
+  agent)        cmd_agent "$@" ;;
+  check)        cmd_check "$@" ;;
+  help|*)       usage ;;
 esac
