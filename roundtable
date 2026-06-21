@@ -209,11 +209,12 @@ cmd_wg_init() {
   [[ -n "$WG_HOST" ]] || { echo "Error: network.host not set in config" >&2; exit 1; }
 
   local host_ip
-  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$|/24|')
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+  # host_ip is now the bare IP (e.g. 10.0.1.1) without CIDR suffix
 
   echo "==> Initializing host WireGuard mesh..." >&2
   echo "    Interface: ${WG_INTERFACE}" >&2
-  echo "    Mesh IP:   ${host_ip} (${AGENTS_SUBNET})" >&2
+  echo "    Mesh IP:   ${host_ip}/24 (${AGENTS_SUBNET})" >&2
   echo "    Port:      ${WG_PORT}" >&2
   echo "    Host:      ${WG_HOST}" >&2
 
@@ -326,7 +327,8 @@ cmd_wg_peer_new() {
 
   # Add peer to host wg0
   local host_ip
-  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$|/24|')
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+  # host_ip is bare IP without CIDR suffix
   wg_add_peer "$agent_pubkey" "${agent_ip}/32" "${host_ip}:${WG_PORT}"
 
   # Persist peer record (YAML)
@@ -380,7 +382,7 @@ cmd_wg_peer_config() {
     wg show "$WG_INTERFACE" | grep -A2 "peer: ${peer_pubkey}" 2>/dev/null || echo "(peer not currently connected)"
   elif [[ "$peer_type" == "agent" ]]; then
     if [[ -f "${ROOT}/.agents/${name}/wg0.conf" ]]; then
-      sed "s/\${CLUSTER_SUBNET}/${CLUSTER_SUBNET}/g" "${ROOT}/.agents/${name}/wg0.conf"
+      sed "s|\${CLUSTER_SUBNET}|${CLUSTER_SUBNET}|g" "${ROOT}/.agents/${name}/wg0.conf"
     else
       echo "Error: no config stored for agent '${name}'" >&2
       exit 1
