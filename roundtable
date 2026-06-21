@@ -8,8 +8,8 @@ usage() {
   printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
   printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
   printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config (default: foreign)"
-  printf "  %-42s %s\n" "wg peer config <name>" "Print peer WireGuard config"
-  printf "  %-42s %s\n" "wg peer rm <name>" "Remove WireGuard peer (agent or foreign)"
+  printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
+  printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
   printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
   printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
   printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
@@ -37,7 +37,7 @@ CONFIG="${ROOT}/config.yml"
 IP_POOL="${ROUNDTABLE_DIR}/ip-pool"
 FOREIGN_IP_POOL="${ROUNDTABLE_DIR}/foreign-ip-pool"
 PEERS_DIR="${ROUNDTABLE_DIR}/peers"
-CONFIGS_DIR="${ROUNDTABLE_DIR}/configs"
+VOLUMES_DIR="${ROUNDTABLE_DIR}/volumes"
 CLUSTER_SUBNETS_FILE="${ROUNDTABLE_DIR}/cluster-subnets"
 
 # ── Config helpers ───────────────────────────────────────────────
@@ -72,7 +72,7 @@ load_config() {
 # ── State directory helpers ──────────────────────────────────────
 
 init_state_dir() {
-  mkdir -p "$PEERS_DIR" "$CONFIGS_DIR"
+  mkdir -p "$PEERS_DIR" "$VOLUMES_DIR"
 
   if [[ ! -f "$IP_POOL" ]]; then
     local base_ip
@@ -119,22 +119,24 @@ ip_pool_free() {
   sed -i "s/^#${ip}$/${ip}/" "$pool_file"
 }
 
-peer_record_path() { echo "${PEERS_DIR}/${1}.yml"; }
+peer_record_path() { local name="$1" type="$2"; echo "${PEERS_DIR}/${name}.${type}.yml"; }
+
+peer_config_path() { local name="$1" type="$2"; echo "${PEERS_DIR}/${name}.${type}.conf"; }
 
 peer_record_create() {
-  local name="$1" record_path
-  record_path=$(peer_record_path "$name")
+  local name="$1" type="$2" record_path
+  record_path=$(peer_record_path "$name" "$type")
   cat > "$record_path"
 }
 
 peer_record_read_value() {
-  local name="$1" key="$2"
-  local record_path; record_path=$(peer_record_path "$name")
-  [[ -f "$record_path" ]] || { echo "Error: peer '${name}' not found" >&2; exit 1; }
+  local name="$1" type="$2" key="$3"
+  local record_path; record_path=$(peer_record_path "$name" "$type")
+  [[ -f "$record_path" ]] || { echo "Error: ${type} peer '${name}' not found" >&2; exit 1; }
   yq ".${key} // \"\"" "$record_path"
 }
 
-peer_record_delete() { rm -f "$(peer_record_path "$1")"; }
+peer_record_delete() { local name="$1" type="$2"; rm -f "$(peer_record_path "$name" "$type")"; }
 
 subnet_in_list() {
   local subnet="$1"
@@ -346,7 +348,7 @@ cmd_wg_peer_new() {
   init_state_dir
 
   # Check if peer already exists
-  local record_path; record_path=$(peer_record_path "$name")
+  local record_path; record_path=$(peer_record_path "$name" "$peer_type")
   if [[ -f "$record_path" ]]; then
     echo "Peer '${name}' already exists:" >&2
     cmd_wg_peer_config "$name"
@@ -393,10 +395,9 @@ cmd_wg_peer_new() {
   } > "$record_path"
 
   if [[ "$peer_type" == "agent" ]]; then
-    # ── Agent config: save to .agents/<name>/wg0.conf for LXC injection ──
-    local agent_conf_dir="${ROOT}/.agents/${name}"
-    mkdir -p "$agent_conf_dir"
-    cat > "${agent_conf_dir}/wg0.conf" <<WGOCONF
+    # ── Agent config: save to .roundtable/peers/<name>.agent.conf ──
+    local agent_conf_path; agent_conf_path=$(peer_config_path "$name" "agent")
+    cat > "$agent_conf_path" <<WGOCONF
 [Interface]
 Address = ${peer_ip}/32
 PrivateKey = ${peer_privkey}
@@ -413,8 +414,8 @@ PersistentKeepalive = ${PERSISTENT_KEEPALIVE}
 WGOCONF
   else
     # ── Foreign/laptop config: clean WireGuard config ──
-    mkdir -p "$CONFIGS_DIR"
-    cat > "${CONFIGS_DIR}/${name}.conf" <<FOREIGN_CONFIG
+    local foreign_conf_path; foreign_conf_path=$(peer_config_path "$name" "foreign")
+    cat > "$foreign_conf_path" <<FOREIGN_CONFIG
 [Interface]
 Address = ${peer_ip}/32
 PrivateKey = ${peer_privkey}
@@ -426,22 +427,30 @@ AllowedIPs = ${CLUSTER_SUBNET}
 Endpoint = ${WG_HOST}:${WG_PORT}
 PersistentKeepalive = ${PERSISTENT_KEEPALIVE}
 FOREIGN_CONFIG
-    cat "${CONFIGS_DIR}/${name}.conf"
+    cat "$foreign_conf_path"
   fi
 }
 
 cmd_wg_peer_config() {
-  local name="${1:?Usage: roundtable wg peer config <name>}"
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer config [--type agent|foreign|host] <name>" >&2; exit 1; }
+
   load_config
   wg_ensure_interface
 
-  local record_path; record_path=$(peer_record_path "$name")
-  [[ -f "$record_path" ]] || { echo "Error: peer '${name}' not found" >&2; exit 1; }
+  local record_path; record_path=$(peer_record_path "$name" "$peer_type")
+  [[ -f "$record_path" ]] || { echo "Error: ${peer_type} peer '${name}' not found" >&2; exit 1; }
 
-  local peer_type
-  peer_type=$(yq '.type // ""' "$record_path")
-
-  if [[ "$peer_type" == "cluster" ]]; then
+  if [[ "$peer_type" == "host" ]]; then
     local peer_subnet peer_endpoint peer_pubkey
     peer_subnet=$(yq '.subnets.agents // ""' "$record_path")
     peer_endpoint=$(yq '.endpoint // ""' "$record_path")
@@ -451,15 +460,17 @@ cmd_wg_peer_config() {
     echo "# Endpoint:    ${peer_endpoint}"
     wg show "$WG_INTERFACE" | grep -A2 "peer: ${peer_pubkey}" 2>/dev/null || echo "(peer not currently connected)"
   elif [[ "$peer_type" == "agent" ]]; then
-    if [[ -f "${ROOT}/.agents/${name}/wg0.conf" ]]; then
-      sed "s|\${CLUSTER_SUBNET}|${CLUSTER_SUBNET}|g" "${ROOT}/.agents/${name}/wg0.conf"
+    local agent_conf_path; agent_conf_path=$(peer_config_path "$name" "agent")
+    if [[ -f "$agent_conf_path" ]]; then
+      cat "$agent_conf_path"
     else
-      echo "Error: no config stored for agent '${name}'" >&2
+      echo "Error: no config saved for agent '${name}'" >&2
       exit 1
     fi
   elif [[ "$peer_type" == "foreign" ]]; then
-    if [[ -f "${CONFIGS_DIR}/${name}.conf" ]]; then
-      cat "${CONFIGS_DIR}/${name}.conf"
+    local foreign_conf_path; foreign_conf_path=$(peer_config_path "$name" "foreign")
+    if [[ -f "$foreign_conf_path" ]]; then
+      cat "$foreign_conf_path"
     else
       echo "Error: no config saved for foreign peer '${name}'" >&2
       exit 1
@@ -471,22 +482,33 @@ cmd_wg_peer_config() {
 }
 
 cmd_wg_peer_rm() {
-  local name="${1:?Usage: roundtable wg peer rm <name>}"
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer rm [--type agent|foreign|host] <name>" >&2; exit 1; }
+
   load_config
   wg_ensure_interface
 
-  local record_path; record_path=$(peer_record_path "$name")
-  [[ -f "$record_path" ]] || { echo "Error: peer '${name}' not found" >&2; exit 1; }
+  local record_path; record_path=$(peer_record_path "$name" "$peer_type")
+  [[ -f "$record_path" ]] || { echo "Error: ${peer_type} peer '${name}' not found" >&2; exit 1; }
 
-  local peer_pubkey peer_type peer_ip
+  local peer_pubkey peer_ip
   peer_pubkey=$(yq '.public_key // ""' "$record_path")
-  peer_type=$(yq '.type // ""' "$record_path")
   peer_ip=$(yq '.ip // ""' "$record_path")
 
-  echo "==> Removing WireGuard peer '${name}'..." >&2
+  echo "==> Removing WireGuard peer '${name}' (${peer_type})..." >&2
 
   wg_remove_peer "$peer_pubkey"
 
+  # Free IP from the correct pool
   local pool_file
   if [[ "$peer_type" == "agent" ]]; then
     pool_file="$IP_POOL"
@@ -496,14 +518,15 @@ cmd_wg_peer_rm() {
 
   if [[ -n "${pool_file:-}" && -n "$peer_ip" ]]; then
     ip_pool_free "$pool_file" "$peer_ip"
-    echo "    IP ${peer_ip} freed (${peer_type})" >&2
+    echo "    IP ${peer_ip} freed" >&2
   fi
 
-  peer_record_delete "$name"
+  peer_record_delete "$name" "$peer_type"
 
-  if [[ "$peer_type" == "foreign" && -f "${CONFIGS_DIR}/${name}.conf" ]]; then
-    rm -f "${CONFIGS_DIR}/${name}.conf"
-    echo "    Saved config removed." >&2
+  # Clean up saved config if it exists
+  local conf_path; conf_path=$(peer_config_path "$name" "$peer_type" 2>/dev/null || echo "")
+  if [[ -n "$conf_path" && -f "$conf_path" ]]; then
+    rm -f "$conf_path"
   fi
 
   echo "    Peer removed." >&2
@@ -556,7 +579,7 @@ cmd_wg_join() {
   [[ -n "$remote_agents" ]] || { echo "Error: invite file missing 'agents'" >&2; exit 1; }
 
   # Check if already joined
-  local record_path; record_path=$(peer_record_path "$name")
+  local record_path; record_path=$(peer_record_path "$name" "host")
   if [[ -f "$record_path" ]]; then
     echo "Already connected to peer '${name}'. Use 'leave' first to re-join." >&2
     return 0
@@ -581,7 +604,7 @@ cmd_wg_join() {
   # Persist cluster peer record (YAML)
   {
     echo "name: ${name}"
-    echo "type: cluster"
+    echo "type: host"
     echo "public_key: ${remote_pubkey}"
     echo "endpoint: ${remote_endpoint}"
     echo "subnets:"
@@ -606,7 +629,7 @@ cmd_wg_leave() {
   load_config
   wg_ensure_interface
 
-  local record_path; record_path=$(peer_record_path "$name")
+  local record_path; record_path=$(peer_record_path "$name" "host")
   if [[ ! -f "$record_path" ]]; then
     echo "Error: peer '${name}' not found. Use 'wg peers' to list connected peers." >&2
     exit 1
@@ -624,7 +647,7 @@ cmd_wg_leave() {
   agents_sub=$(yq '.subnets.agents // ""' "$record_path")
   foreign_sub=$(yq '.subnets.foreign // ""' "$record_path")
 
-  peer_record_delete "$name"
+  peer_record_delete "$name" "host"
 
   [[ -n "$agents_sub" ]] && subnet_list_remove "$agents_sub"
   [[ -n "$foreign_sub" ]] && subnet_list_remove "$foreign_sub"
@@ -757,7 +780,7 @@ cmd_agent_create() {
     exit 1
   fi
 
-  local agent_dir="${ROOT}/.agents/${name}"
+  local agent_dir="${VOLUMES_DIR}/${name}"
   mkdir -p "${agent_dir}/volume"
 
   echo "==> Launching agent '${name}' (${lxc_name})..." >&2
@@ -824,11 +847,11 @@ cmd_agent_delete() {
   echo "Removing agent '${name}' (${lxc_name})..." >&2
 
   echo "  Releasing WireGuard peer..." >&2
-  cmd_wg_peer_rm "$name" 2>/dev/null || true
+  cmd_wg_peer_rm --type agent "$name" 2>/dev/null || true
 
   lxc stop "$lxc_name" 2>/dev/null || true
   lxc delete "$lxc_name" 2>/dev/null || true
-  rm -rf "${ROOT}/.agents/${name}"
+  rm -rf "${VOLUMES_DIR}/${name}"
 
   echo "Agent '${name}' deleted." >&2
 }

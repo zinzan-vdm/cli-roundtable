@@ -4,11 +4,8 @@
 # Runtime config (contains host IP, subnets — edit your own copy)
 config.yml
 
-# Runtime state (peer records, IP pool, cluster subnets)
+# Runtime state (peer records, IP pools, volumes, configs)
 .roundtable/
-
-# Per-agent persistent storage (configs, volumes)
-.agents/
 
 # Build artifacts
 __pycache__/

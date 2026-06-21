@@ -98,14 +98,16 @@ sudo ./roundtable agent gateway up arthur
 ```bash
 roundtable wg init [--force]          # Initialize host wg0 mesh (idempotent)
 roundtable wg up|down                 # Bring wg0 up/down
-roundtable wg peer new <name>         # Create foreign WireGuard peer (laptop/admin) + print config
+roundtable wg peer new <name>         # Create foreign WireGuard peer (laptop/admin, default)
 roundtable wg peer new --type agent <name>  # Create agent WireGuard peer
-roundtable wg peer config <name>      # Print peer's WireGuard config
-roundtable wg peer rm <name>          # Remove any peer (agent, foreign, or cluster)
+roundtable wg peer config <name>      # Print foreign peer config (default type: foreign)
+roundtable wg peer config --type agent <name>  # Print agent peer config
+roundtable wg peer rm <name>          # Remove foreign peer (default type: foreign)
+roundtable wg peer rm --type agent <name>  # Remove agent peer
 roundtable wg invite                  # Generate anonymous cluster invitation
-roundtable wg join <name> <invite>    # Connect to a remote mesh
+roundtable wg join <name> <invite>    # Connect to a remote mesh (host type)
 roundtable wg leave <name>            # Disconnect from a remote mesh
-roundtable wg peers                   # List all peers (agents + foreign + clusters)
+roundtable wg peers                   # List all peers (agent, foreign, host)
 ```
 
 ### `golden-image` — Agent base image
@@ -346,11 +348,9 @@ cli-roundtable/
   .roundtable/          # Runtime state (gitignored)
     ip-pool             # Agent IP allocation tracker (from network.wg.subnets.agents)
     foreign-ip-pool     # Foreign IP allocation tracker (from network.wg.subnets.foreign)
-    peers/              # Peer records (YAML)
-    configs/            # Saved configs for foreign/laptop peers
+    peers/              # Peer records (name.agent.yml, name.foreign.yml, name.host.yml)
+                        # + saved configs (name.agent.conf, name.foreign.conf)
+    volumes/            # Per-agent LXD persistent storage
+      {name}/           # Mounted at /opt/data inside container
     cluster-subnets     # Connected remote subnets
-  .agents/              # Per-agent persistent storage
-    {name}/
-      volume/           # Mounted at /opt/data inside container
-      wg0.conf          # Agent's WireGuard config
 ```
