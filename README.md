@@ -11,16 +11,32 @@ Each agent is a **full Ubuntu 24.04 LXD system container** cloned from a `roundt
 WireGuard (wg0) runs **natively on the host** — no Docker, no wg-easy. Agents route cluster traffic through the host, and the host's wg0 manages all peer connections (local agents + remote cluster hosts).
 
 ```
-                                ┌── agent-01 (10.0.1.2) ──┐
-                                │  wg0 endpoint: host      │
-                                │  AllowedIPs: 10.0.0.0/8  │
-Host wg0 (10.0.1.1) ───────────┼── agent-02 (10.0.1.3) ──┼── LXD bridge → internet
-  mesh: 10.0.1.0/24            │                          │
-  ├── PEER: Host B              └──────────────────────────┘
-  │     subnet: 10.0.3.0/24
-  │     endpoint: <B-IP>:51820
-  └── PEER: Admin laptop
-        subnet: 10.0.2.0/24
+                                     +-----------------------------------------------------------------------+
+                                     | Server/Host                                                           |
+                                     |                                            +---------------------+    |
+                                     |                            +---------------|  agent-00           |    |
+                                     |                            |  VPN Peer     +---------------------+    |
+                                     |                            |  10.10.1.2    LXD Container              |
+                                     |                            |               eth → lxbr0 (internet)     |
+                                     |                            |               wg0 → 10.10.1.2 (VPN)      |
+                                     |                            |                                          |
+                                     |                            |                                          |
++--------------------+               |    +--------------------+  |               +---------------------+    |
+|  Admin             |---------------+----|  VPN               |--+---------------|  agent-01           |    |
++--------------------+  VPN Peer     |    +--------------------+  |  VPN Peer     +---------------------+    |
+Your local machine      10.10.1.1    |    Wireguard VPN Server    |  10.10.1.3    LXD Container              |
+                                     |    Runs on host            |               eth → lxbr0 (internet)     |
+                                     |    Mesh (10.10.1.0/24)     |               wg0 → 10.10.1.3 (VPN)      |
+                                     |    Mesh IP 10.10.1.0       |                                          |
+                                     |                            |                                          |
+                                     |                            |               +---------------------+    |
+                                     |                            +---------------|  agent-XX           |    |
+                                     |                               VPN Peer     +---------------------+    |
+                                     |                               10.10.1.x    eth → lxbr0 (internet)     |
+                                     |                                            wg0 → 10.10.1.4 (VPN)      |
+                                     |                                                                       |
+                                     +-----------------------------------------------------------------------+
+
 ```
 
 **Key design decisions:**
