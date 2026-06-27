@@ -98,22 +98,50 @@ test ! -f .roundtable/peers/c-test.foreign.conf && pass "2A.14 Config deleted" |
 ! ip route show dev wg0 | grep -q "$peer_ip" && pass "2A.15 Route removed" || fail "2A.15 route still present"
 ! grep -q "peer:c-test" /etc/wireguard/wg0.conf && pass "2A.16 Config section cleaned" || fail "2A.16 config still has section"
 
-# ── SSH access test ──
-out=$(sudo ./roundtable wg peer new --type foreign ssh-test 2>&1)
-echo "$out" | grep -q "SSH:" && pass "2A.17 SSH command printed" || fail "2A.17: $(echo "$out" | head -1)"
+# ── SSH access tests ──
+# Test 1: create foreign peer WITHOUT SSH (non-interactive → defaults to no)
 host_ip=$(ip addr show wg0 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "")
-echo "$out" | grep -q "ssh.*@${host_ip}" && pass "2A.18 SSH target is WG mesh IP (${host_ip})" || fail "2A.18 ssh target"
-test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.19 SSH private key saved" || fail "2A.19 ssh-key"
-test -f .roundtable/peers/ssh-test.foreign.ssh-key.pub && pass "2A.20 SSH public key saved" || fail "2A.20 ssh-key.pub"
-id roundtable &>/dev/null && pass "2A.21 roundtable user exists" || fail "2A.21 user"
-echo "$(sudo cat /etc/sudoers.d/99-roundtable)" | grep -q "NOPASSWD:ALL" && pass "2A.22 Passwordless sudo" || fail "2A.22 sudo"
-grep -q "roundtable" /home/roundtable/.ssh/authorized_keys && pass "2A.23 SSH key in authorized_keys" || fail "2A.23 authorized_keys"
-test -f /etc/ssh/sshd_config.d/99-roundtable.conf && pass "2A.24 sshd Match block installed" || fail "2A.24 match block"
-grep -q "Address 10.0.0.0/8" /etc/ssh/sshd_config.d/99-roundtable.conf && pass "2A.25 Match restricts to WG subnet" || fail "2A.25 subnet match"
+out=$(echo "" | sudo ./roundtable wg peer new --type foreign ssh-test 2>&1)
+echo "$out" | grep -q "foreign" && pass "2A.17 Create foreign (no SSH)" || fail "2A.17: $(echo "$out" | head -1)"
+! test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.18 No SSH key without confirmation" || fail "2A.18 SSH key was generated unexpectedly"
+
+# Test 2: wg peer ssh new — generate key for existing peer
+out=$(sudo ./roundtable wg peer ssh new ssh-test 2>&1)
+echo "$out" | grep -q "SSH key generated" && pass "2A.19 wg peer ssh new generates key" || fail "2A.19: $out"
+test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.20 SSH private key saved" || fail "2A.20 ssh-key"
+test -f .roundtable/peers/ssh-test.foreign.ssh-key.pub && pass "2A.21 SSH public key saved" || fail "2A.21 ssh-key.pub"
+id roundtable &>/dev/null && pass "2A.22 roundtable user exists" || fail "2A.22 user"
+echo "$(sudo cat /etc/sudoers.d/99-roundtable)" | grep -q "NOPASSWD:ALL" && pass "2A.23 Passwordless sudo" || fail "2A.23 sudo"
+grep -q "roundtable" /home/roundtable/.ssh/authorized_keys && pass "2A.24 SSH key in authorized_keys" || fail "2A.24 authorized_keys"
+test -f /etc/ssh/sshd_config.d/99-roundtable.conf && pass "2A.25 sshd Match block installed" || fail "2A.25 match block"
+grep -q "Address 10.0.0.0/8" /etc/ssh/sshd_config.d/99-roundtable.conf && pass "2A.26 Match restricts to WG subnet" || fail "2A.26 subnet match"
+
+# Test 3: wg peer ssh new is idempotent
+out=$(sudo ./roundtable wg peer ssh new ssh-test 2>&1)
+echo "$out" | grep -q "already exists" && pass "2A.27 ssh new idempotent" || fail "2A.27: $out"
+
+# Test 4: wg peer ssh config — prints connection info
+out=$(sudo ./roundtable wg peer ssh config ssh-test 2>&1)
+echo "$out" | grep -q "ssh.*@${host_ip}" && pass "2A.28 ssh config shows target" || fail "2A.28: $out"
+echo "$out" | grep -q ".ssh-key" && pass "2A.29 ssh config shows key path" || fail "2A.29: $out"
+
+# Test 5: wg peer ssh rm — remove key
+out=$(sudo ./roundtable wg peer ssh rm ssh-test 2>&1)
+echo "$out" | grep -q "removed" && pass "2A.30 ssh rm removes key" || fail "2A.30: $out"
+! grep -q "peer:ssh-test" /home/roundtable/.ssh/authorized_keys && pass "2A.31 Key removed from authorized_keys" || fail "2A.31 key still present"
+! test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.32 Key files cleaned" || fail "2A.32 key files still exist"
+
+# Test 6: wg peer ssh rm idempotent
+out=$(sudo ./roundtable wg peer ssh rm ssh-test 2>&1)
+echo "$out" | grep -q "No SSH key found" && pass "2A.33 ssh rm idempotent" || fail "2A.33: $out"
+
+# Test 7: ssh config without key shows hint
+out=$(sudo ./roundtable wg peer ssh config ssh-test 2>&1)
+echo "$out" | grep -q "Generate one" && pass "2A.34 ssh config suggests generation" || fail "2A.34: $out"
+
+# Test 8: cleanup the peer
 out=$(sudo ./roundtable wg peer rm ssh-test 2>&1)
-echo "$out" | grep -qi "removed" && pass "2A.26 Cleanup ssh-test" || fail "2A.26: $out"
-! grep -q "peer:ssh-test" /home/roundtable/.ssh/authorized_keys && pass "2A.27 SSH key removed from authorized_keys" || fail "2A.27 key still present"
-! test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.28 SSH key files cleaned" || fail "2A.28 ssh-key files still exist"
+echo "$out" | grep -qi "removed" && pass "2A.35 Cleanup ssh-test" || fail "2A.35: $out"
 
 # ── Phase 2B: Agent peer lifecycle ──
 echo ""

@@ -120,12 +120,15 @@ sudo ./roundtable agent gateway up arthur
 roundtable wg init [--force]          # Initialize host wg0 mesh (idempotent)
 roundtable wg up|down                 # Bring wg0 up/down
 roundtable wg peer new <name>         # Create foreign WireGuard peer (laptop/admin, default)
-                                     #   Also generates SSH key for roundtable user
+                                     #   Prompts for optional SSH key generation
 roundtable wg peer new --type agent <name>  # Create agent WireGuard peer (no SSH)
 roundtable wg peer config <name>      # Print foreign peer config (default type: foreign)
 roundtable wg peer config --type agent <name>  # Print agent peer config
 roundtable wg peer rm <name>          # Remove foreign peer (also removes SSH key)
 roundtable wg peer rm --type agent <name>  # Remove agent peer
+roundtable wg peer ssh new <name>     # Generate SSH key for foreign peer
+roundtable wg peer ssh rm <name>      # Remove SSH key for foreign peer
+roundtable wg peer ssh config <name>  # Print SSH connection info
 roundtable wg invite                  # Generate anonymous cluster invitation
 roundtable wg join <name> <invite>    # Connect to a remote mesh (host type)
 roundtable wg leave <name>            # Disconnect from a remote mesh
@@ -313,25 +316,35 @@ Each agent gets a WireGuard config injected at creation. The agent's wg0 targets
 
 ### SSH access (foreign peers)
 
-Foreign peers (admin/laptop) automatically get SSH access as the `roundtable` user. The user is password-locked with passwordless sudo — only SSH key authentication is allowed, and only from within the WireGuard mesh.
+Foreign peers (admin/laptop) can optionally get SSH access as the `roundtable` user. During `wg peer new`, you're prompted:
 
 ```bash
-# Creating a foreign peer prints the SSH command:
 $ sudo ./roundtable wg peer new laptop
     IP: 10.0.2.2 (foreign)
-    SSH: ssh roundtable@10.0.1.1 -i .roundtable/peers/laptop.foreign.ssh-key
+    SSH access (optional):
+    Generate SSH key for admin access? [y/N] y
 ```
 
-The host uses an sshd `Match` block (`/etc/ssh/sshd_config.d/99-roundtable.conf`) to restrict the `roundtable` user to `10.0.0.0/8` — unreachable from the public internet. Deleting the peer removes the SSH key from `authorized_keys`.
+If you decline, you can add SSH later with the `wg peer ssh` subcommand:
+
+| Command | Description |
+|---------|-------------|
+| `roundtable wg peer ssh new <name>` | Generate an SSH key for an existing foreign peer |
+| `roundtable wg peer ssh rm <name>` | Remove the SSH key |
+| `roundtable wg peer ssh config <name>` | Print connection info (host, key path) |
+
+The `roundtable` user is password-locked with passwordless sudo — only SSH key authentication is allowed, and only from within the WireGuard mesh via an sshd `Match` block (`/etc/ssh/sshd_config.d/99-roundtable.conf`).
 
 ```bash
-# From your laptop (connected via WireGuard):
+# On your laptop (connected via WireGuard):
 scp root@<host-ip>:.roundtable/peers/laptop.foreign.ssh-key ~/.ssh/roundtable-laptop
 ssh roundtable@10.0.1.1 -i ~/.ssh/roundtable-laptop
 
 # You have sudo:
 roundtable@host:~$ sudo ./roundtable wg peers
 ```
+
+Deleting the peer (`wg peer rm`) removes the SSH key from `authorized_keys`, and `wg peer ssh rm` lets you remove it independently.
 
 ---
 
