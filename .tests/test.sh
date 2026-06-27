@@ -22,6 +22,7 @@ cleanup() {
   sudo ./roundtable wg peer rm c-test 2>/dev/null || true
   sudo ./roundtable wg leave loopback 2>/dev/null || true
   sudo ./roundtable wg peer rm --type agent persist-test 2>/dev/null || true
+  sudo ./roundtable wg peer rm restore-test 2>/dev/null || true
   rm -f /tmp/host-a.yml /tmp/host-a-2.yml /tmp/bad.yml /tmp/invite-test.yml
 }
 
@@ -231,6 +232,47 @@ echo "$out" | grep -qi "removed" && pass "7.9 Cleanup persist" || fail "7.9: $ou
 # Verify cleanup
 ! ip route show dev wg0 | grep -q "$persist_ip" && pass "7.10 Route removed" || fail "7.10 route still present"
 ! grep -q "peer:persist-test" /etc/wireguard/wg0.conf && pass "7.11 Config section cleaned" || fail "7.11 config still has section"
+
+# ── Phase 8: Restore command ──
+echo ""
+echo "── Phase 8: Restore command ──"
+
+# Run restore on empty state (should be a no-op)
+out=$(sudo ./roundtable wg restore 2>&1)
+echo "$out" | grep -q "0 peers processed" && pass "8.1 Restore on empty state" || fail "8.1: $out"
+
+# Create a foreign peer
+out=$(sudo ./roundtable wg peer new restore-test 2>&1)
+echo "$out" | grep -q "foreign" && pass "8.2 Create restore-test" || fail "8.2: $(echo "$out" | head -1)"
+
+restore_ip=$(yq '.ip' .roundtable/peers/restore-test.foreign.yml)
+restore_conf_sec=$(grep -c "# peer:restore-test:foreign" /etc/wireguard/wg0.conf || true)
+
+# Run restore (should skip — already synced)
+out=$(sudo ./roundtable wg restore 2>&1)
+echo "$out" | grep -q "already current" && pass "8.3 Restore idempotent (skips existing)" || fail "8.3: $out"
+
+# Simulate old state: remove config section + route
+sudo sed -i "/# peer:restore-test:foreign/,+5d" /etc/wireguard/wg0.conf
+sudo ip route del "${restore_ip}/32" dev wg0 2>/dev/null || true
+! grep -q "restore-test" /etc/wireguard/wg0.conf && pass "8.4 Config removed (simulated old state)" || fail "8.4 config still present"
+! ip route show dev wg0 | grep -q "$restore_ip" && pass "8.5 Route removed" || fail "8.5 route still present"
+
+# Restore should re-add config + route
+out=$(sudo ./roundtable wg restore 2>&1)
+echo "$out" | grep -q "config.*added foreign" && pass "8.6 Restore re-adds config section" || fail "8.6: $out"
+grep -q "# peer:restore-test:foreign" /etc/wireguard/wg0.conf && pass "8.7 Config present after restore" || fail "8.7 config missing"
+ip route show dev wg0 | grep -q "$restore_ip" && pass "8.8 Route present after restore" || fail "8.8 route missing"
+
+# Second run should skip (idempotent)
+out=$(sudo ./roundtable wg restore 2>&1)
+echo "$out" | grep -q "already current" && pass "8.9 Re-restore idempotent" || fail "8.9: $out"
+
+# Cleanup
+out=$(sudo ./roundtable wg peer rm restore-test 2>&1)
+echo "$out" | grep -qi "removed" && pass "8.10 Cleanup restore-test" || fail "8.10: $out"
+! grep -q "peer:restore-test" /etc/wireguard/wg0.conf && pass "8.11 Config cleaned" || fail "8.11 config still present"
+! ip route show dev wg0 | grep -q "$restore_ip" && pass "8.12 Route cleaned" || fail "8.12 route still present"
 
 # ── Summary ──
 echo ""

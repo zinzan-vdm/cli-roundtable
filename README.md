@@ -127,6 +127,7 @@ roundtable wg invite                  # Generate anonymous cluster invitation
 roundtable wg join <name> <invite>    # Connect to a remote mesh (host type)
 roundtable wg leave <name>            # Disconnect from a remote mesh
 roundtable wg peers                   # List all peers (agent, foreign, host)
+roundtable wg restore                 # Sync config + routes from saved records (post-upgrade)
 ```
 
 ### `golden-image` — Agent base image
