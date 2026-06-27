@@ -284,7 +284,8 @@ ssh_remove_key() {
 
 ssh_access_is_setup() {
   [[ -L "${SSH_HOME}/cli-roundtable" ]] && \
-    [[ "$(readlink -f "${SSH_HOME}/cli-roundtable")" == "$(readlink -f "$ROOT")" ]]
+    [[ "$(readlink -f "${SSH_HOME}/cli-roundtable")" == "$(readlink -f "$ROOT")" ]] && \
+    getfacl /root 2>/dev/null | grep -q "user:roundtable:r-x"
 }
 
 ssh_ensure_access() {
