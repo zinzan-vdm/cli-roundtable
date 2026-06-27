@@ -81,10 +81,16 @@ echo "$out" | grep -q "Address" && pass "2A.7 Config retrievable" || fail "2A.7 
 sudo ./roundtable wg peers 2>&1 | grep c-test | grep -q foreign && pass "2A.8 wg peers foreign" || fail "2A.8 peers"
 out=$(sudo ./roundtable wg peer new c-test 2>&1 || true)
 echo "$out" | grep -q "already exists" && pass "2A.9 Duplicate detection" || fail "2A.9 dup: $(echo "$out" | head -1)"
+# Route persistence check
+peer_ip=$(yq '.ip' .roundtable/peers/c-test.foreign.yml)
+ip route show dev wg0 | grep -q "$peer_ip" && pass "2A.10 Route installed: $peer_ip" || fail "2A.10 route for $peer_ip"
+grep -q "# peer:c-test:foreign" /etc/wireguard/wg0.conf && pass "2A.11 Config section persisted" || fail "2A.11 config section"
 out=$(sudo ./roundtable wg peer rm c-test 2>&1)
-echo "$out" | grep -qi "removed" && pass "2A.10 rm foreign" || fail "2A.10 rm: $out"
-test ! -f .roundtable/peers/c-test.foreign.yml && pass "2A.11 Record deleted" || fail "2A.11 record"
-test ! -f .roundtable/peers/c-test.foreign.conf && pass "2A.12 Config deleted" || fail "2A.12 config"
+echo "$out" | grep -qi "removed" && pass "2A.12 rm foreign" || fail "2A.12 rm: $out"
+test ! -f .roundtable/peers/c-test.foreign.yml && pass "2A.13 Record deleted" || fail "2A.13 record"
+test ! -f .roundtable/peers/c-test.foreign.conf && pass "2A.14 Config deleted" || fail "2A.14 config"
+! ip route show dev wg0 | grep -q "$peer_ip" && pass "2A.15 Route removed" || fail "2A.15 route still present"
+! grep -q "peer:c-test" /etc/wireguard/wg0.conf && pass "2A.16 Config section cleaned" || fail "2A.16 config still has section"
 
 # ── Phase 2B: Agent peer lifecycle ──
 echo ""
@@ -101,17 +107,24 @@ grep -q "AllowedIPs = 10.0.0.0/8" .roundtable/peers/a-test.agent.conf && pass "2
 out=$(sudo ./roundtable wg peer config --type agent a-test 2>&1)
 echo "$out" | grep -q "Address" && pass "2B.8 Agent config retrieve" || fail "2B.8 config: $out"
 sudo ./roundtable wg peers 2>&1 | grep a-test | grep -q agent && pass "2B.9 wg peers agent" || fail "2B.9 peers"
+# Agent route persistence
+agent_ip=$(yq '.ip' .roundtable/peers/a-test.agent.yml)
+ip route show dev wg0 | grep -q "$agent_ip" && pass "2B.10 Agent route: $agent_ip" || fail "2B.10 agent route"
+grep -q "# peer:a-test:agent" /etc/wireguard/wg0.conf && pass "2B.11 Agent config persisted" || fail "2B.11 config section"
 out=$(sudo ./roundtable wg peer new --type agent b-test 2>&1)
-echo "$out" | grep -q "agent" && pass "2B.10 Second agent" || fail "2B.10: $out"
-[[ "$(yq '.ip' .roundtable/peers/b-test.agent.yml)" =~ ^10\.0\.1\. ]] && pass "2B.11 Second subnet" || fail "2B.11 subnet"
+echo "$out" | grep -q "agent" && pass "2B.12 Second agent" || fail "2B.12: $out"
+[[ "$(yq '.ip' .roundtable/peers/b-test.agent.yml)" =~ ^10\.0\.1\. ]] && pass "2B.13 Second subnet" || fail "2B.13 subnet"
 count=$(sudo ./roundtable wg peers 2>&1 | grep -c "agent" || true)
-[[ "$count" -ge 2 ]] && pass "2B.12 Both agents visible ($count)" || fail "2B.12 count=$count"
+[[ "$count" -ge 2 ]] && pass "2B.14 Both agents visible ($count)" || fail "2B.14 count=$count"
+# Clean up agents
 out=$(sudo ./roundtable wg peer rm --type agent a-test 2>&1)
-echo "$out" | grep -qi "removed" && pass "2B.13 rm agent a" || fail "2B.13: $out"
-test ! -f .roundtable/peers/a-test.agent.yml && pass "2B.14 Agent record deleted" || fail "2B.14 record"
-test ! -f .roundtable/peers/a-test.agent.conf && pass "2B.15 Agent config deleted" || fail "2B.15 config"
+echo "$out" | grep -qi "removed" && pass "2B.15 rm agent a" || fail "2B.15: $out"
+test ! -f .roundtable/peers/a-test.agent.yml && pass "2B.16 Agent record deleted" || fail "2B.16 record"
+test ! -f .roundtable/peers/a-test.agent.conf && pass "2B.17 Agent config deleted" || fail "2B.17 config"
+! ip route show dev wg0 | grep -q "$agent_ip" && pass "2B.18 Agent route removed" || fail "2B.18 route still present"
+! grep -q "peer:a-test" /etc/wireguard/wg0.conf && pass "2B.19 Agent config cleaned" || fail "2B.19 config still present"
 out=$(sudo ./roundtable wg peer rm --type agent b-test 2>&1)
-echo "$out" | grep -qi "removed" && pass "2B.16 rm agent b" || fail "2B.16: $out"
+echo "$out" | grep -qi "removed" && pass "2B.20 rm agent b" || fail "2B.20: $out"
 
 # ── Phase 2C: Edge cases ──
 echo ""
@@ -146,14 +159,20 @@ echo "$out" | grep -qE "(Joined|already connected)" && pass "3.9 Join self-invit
 test -f .roundtable/peers/loopback.host.yml && pass "3.10 Host record created" || fail "3.10 host record"
 [[ "$(yq '.type' .roundtable/peers/loopback.host.yml)" == "host" ]] && pass "3.11 Host type=host" || fail "3.11 host type"
 sudo ./roundtable wg peers 2>&1 | grep loopback | grep -q host && pass "3.12 wg peers host" || fail "3.12 host peers"
+# Cluster route persistence: agents subnet should be routed via wg0
+agents_sub=$(yq '.subnets.agents' .roundtable/peers/loopback.host.yml)
+ip route show dev wg0 | grep -q "$agents_sub" && pass "3.13 Cluster subnet route: $agents_sub" || fail "3.13 cluster subnet route"
+grep -q "# peer:loopback:host" /etc/wireguard/wg0.conf && pass "3.14 Host config persisted" || fail "3.14 host config section"
 out=$(sudo ./roundtable wg leave loopback 2>&1)
-echo "$out" | grep -q "Leaving" && pass "3.13 Leave peer" || fail "3.13 leave: $out"
-test ! -f .roundtable/peers/loopback.host.yml && pass "3.14 Host record cleaned" || fail "3.14 cleaned"
+echo "$out" | grep -q "Leaving" && pass "3.15 Leave peer" || fail "3.15 leave: $out"
+test ! -f .roundtable/peers/loopback.host.yml && pass "3.16 Host record cleaned" || fail "3.16 cleaned"
+! ip route show dev wg0 | grep -q "$agents_sub" && pass "3.17 Cluster route removed" || fail "3.17 cluster route still present"
+! grep -q "peer:loopback" /etc/wireguard/wg0.conf && pass "3.18 Host config cleaned" || fail "3.18 config still has host section"
 out=$(sudo ./roundtable wg leave nonexistent 2>&1 || true)
-echo "$out" | grep -qi "not found" && pass "3.15 Leave nonexistent" || fail "3.15: $(echo "$out" | head -1)"
+echo "$out" | grep -qi "not found" && pass "3.19 Leave nonexistent" || fail "3.19: $(echo "$out" | head -1)"
 echo "bad: yaml" > /tmp/bad.yml
 out=$(sudo ./roundtable wg join broken /tmp/bad.yml 2>&1 || true)
-echo "$out" | grep -qi "missing" && pass "3.16 Malformed invite error" || fail "3.16: $(echo "$out" | head -1)"
+echo "$out" | grep -qi "missing" && pass "3.20 Malformed invite error" || fail "3.20: $(echo "$out" | head -1)"
 
 # ── Phase 4: Golden image (skip) ──
 echo ""
@@ -193,15 +212,25 @@ echo "── Phase 7: Reboot resilience ──"
 
 out=$(sudo ./roundtable wg peer new --type agent persist-test 2>&1)
 echo "$out" | grep -q "agent" && pass "7.1 Create persist peer" || fail "7.1: $out"
-# State files survive (reboot resilience for on-disk state)
+# State on disk
 test -f .roundtable/peers/persist-test.agent.yml && pass "7.2 Peer record on disk" || fail "7.2 peer record"
 test -f .roundtable/peers/persist-test.agent.conf && pass "7.3 Peer config on disk" || fail "7.3 peer config"
 test -f .roundtable/ip-pool && pass "7.4 IP pool on disk" || fail "7.4 ip pool"
-# Runtime peers need a PostUp restore script (future feature)
-# For now, verify the disk state is intact
-sudo ./roundtable wg peer config --type agent persist-test > /dev/null 2>&1 && pass "7.5 Config retrievable from disk" || fail "7.5 config retrieve"
+# Route is installed
+persist_ip=$(yq '.ip' .roundtable/peers/persist-test.agent.yml)
+ip route show dev wg0 | grep -q "$persist_ip" && pass "7.5 Route installed: $persist_ip" || fail "7.5 route installed"
+# Peer section in wg-quick config
+grep -q "# peer:persist-test:agent" /etc/wireguard/wg0.conf && pass "7.6 Config section persisted" || fail "7.6 config section"
+# wg-quick strip preserves the peer for boot restoration
+wg-quick strip /etc/wireguard/wg0.conf 2>/dev/null | grep -q "persist-test" && pass "7.7 wg-quick strip preserves peer" || fail "7.7 wg-quick strip"
+# Config retrievable
+sudo ./roundtable wg peer config --type agent persist-test > /dev/null 2>&1 && pass "7.8 Config retrievable from disk" || fail "7.8 config retrieve"
+# Cleanup
 out=$(sudo ./roundtable wg peer rm --type agent persist-test 2>&1)
-echo "$out" | grep -qi "removed" && pass "7.6 Cleanup persist" || fail "7.6: $out"
+echo "$out" | grep -qi "removed" && pass "7.9 Cleanup persist" || fail "7.9: $out"
+# Verify cleanup
+! ip route show dev wg0 | grep -q "$persist_ip" && pass "7.10 Route removed" || fail "7.10 route still present"
+! grep -q "peer:persist-test" /etc/wireguard/wg0.conf && pass "7.11 Config section cleaned" || fail "7.11 config still has section"
 
 # ── Summary ──
 echo ""
