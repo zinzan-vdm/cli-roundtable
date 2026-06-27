@@ -413,6 +413,9 @@ cmd_wg_peer_new() {
   # Add peer to host wg0
   wg_add_peer "$peer_pubkey" "${peer_ip}/32" "${host_ip}:${WG_PORT}"
 
+  # Install route immediately so the kernel routes peer IP through wg0
+  ip route replace "${peer_ip}/32" dev "$WG_INTERFACE" 2>/dev/null || true
+
   # Persist peer record (YAML)
   {
     echo "name: ${name}"
@@ -542,6 +545,11 @@ cmd_wg_peer_rm() {
   # Remove peer section from wg-quick config
   wg_config_remove_peer "$name" "$peer_type"
 
+  # Remove the route for this peer
+  if [[ -n "$peer_ip" ]]; then
+    ip route del "${peer_ip}/32" dev "$WG_INTERFACE" 2>/dev/null || true
+  fi
+
   # Free IP from the correct pool
   local pool_file
   if [[ "$peer_type" == "agent" ]]; then
@@ -635,6 +643,13 @@ cmd_wg_join() {
   # Add peer to host wg0
   wg_add_peer "$remote_pubkey" "$allowed_ips" "$remote_endpoint"
 
+  # Install routes for each remote subnet so the kernel routes them through wg0
+  local subnet
+  IFS=',' read -ra subnets <<< "$allowed_ips"
+  for subnet in "${subnets[@]}"; do
+    ip route replace "$subnet" dev "$WG_INTERFACE" 2>/dev/null || true
+  done
+
   # Persist cluster peer record (YAML)
   {
     echo "name: ${name}"
@@ -688,6 +703,10 @@ cmd_wg_leave() {
   foreign_sub=$(yq '.subnets.foreign // ""' "$record_path")
 
   peer_record_delete "$name" "host"
+
+  # Remove routes for the remote agent/foreign subnets
+  [[ -n "$agents_sub" ]] && ip route del "$agents_sub" dev "$WG_INTERFACE" 2>/dev/null || true
+  [[ -n "$foreign_sub" ]] && ip route del "$foreign_sub" dev "$WG_INTERFACE" 2>/dev/null || true
 
   [[ -n "$agents_sub" ]] && subnet_list_remove "$agents_sub"
   [[ -n "$foreign_sub" ]] && subnet_list_remove "$foreign_sub"
