@@ -935,6 +935,8 @@ cmd_check() {
     printf "  %-35s " "${label}"
     if [ "$status" = "ok" ]; then
       echo -e "[✅] ${detail}"
+    elif [ "$status" = "skip" ]; then
+      echo -e "[⏭] ${detail}"
     else
       echo -e "[❌] ${detail}"
     fi
