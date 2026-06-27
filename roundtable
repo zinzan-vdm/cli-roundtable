@@ -284,7 +284,8 @@ ssh_remove_key() {
 
 ssh_access_is_setup() {
   [[ -L "${SSH_HOME}/cli-roundtable" ]] && \
-    [[ "$(readlink -f "${SSH_HOME}/cli-roundtable")" == "$(readlink -f "$ROOT")" ]]
+    [[ "$(readlink -f "${SSH_HOME}/cli-roundtable")" == "$(readlink -f "$ROOT")" ]] && \
+    getfacl /root 2>/dev/null | grep -q "user:roundtable:r-x"
 }
 
 ssh_ensure_access() {
@@ -311,6 +312,12 @@ ssh_ensure_access() {
   echo "  SSH: Setting ACL permissions on ${ROOT} for roundtable user" >&2
   setfacl -R -m u:roundtable:rwX "$ROOT"
   setfacl -R -d -m u:roundtable:rwX "$ROOT" 2>/dev/null || true
+
+  # Allow traverse into /root so the roundtable user can follow the symlink
+  if ! getfacl /root 2>/dev/null | grep -q "user:roundtable:r-x"; then
+    echo "  SSH: Granting traverse on /root for roundtable user" >&2
+    setfacl -m u:roundtable:rx /root
+  fi
 
   echo "  ✅ SSH user workspace configured. Log in as 'roundtable' and run: roundtable check" >&2
 }
