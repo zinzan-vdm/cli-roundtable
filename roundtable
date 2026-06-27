@@ -148,8 +148,12 @@ subnet_list_add() { echo "$1" >> "$CLUSTER_SUBNETS_FILE"; }
 subnet_list_remove() {
   local subnet="$1"
   if [[ -f "$CLUSTER_SUBNETS_FILE" ]]; then
-    grep -vxF "$subnet" "$CLUSTER_SUBNETS_FILE" > "${CLUSTER_SUBNETS_FILE}.tmp" && \
-      mv "${CLUSTER_SUBNETS_FILE}.tmp" "$CLUSTER_SUBNETS_FILE"
+    grep -vxF "$subnet" "$CLUSTER_SUBNETS_FILE" > "${CLUSTER_SUBNETS_FILE}.tmp" || true
+    mv "${CLUSTER_SUBNETS_FILE}.tmp" "$CLUSTER_SUBNETS_FILE"
+    # Clean up empty file — no subnets left
+    if [[ ! -s "$CLUSTER_SUBNETS_FILE" ]]; then
+      rm -f "$CLUSTER_SUBNETS_FILE"
+    fi
   fi
 }
 
@@ -543,7 +547,7 @@ cmd_wg_invite() {
   # Resolve WG_HOST to IP if it's a domain
   local endpoint_ip="$WG_HOST"
   if ! echo "$WG_HOST" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-    endpoint_ip=$(host "$WG_HOST" 2>/dev/null | grep "has address" | head -1 | awk '{print $NF}')
+    endpoint_ip=$(host "$WG_HOST" 2>/dev/null | grep "has address" | head -1 | awk '{print $NF}' || true)
     [[ -n "$endpoint_ip" ]] || endpoint_ip="$WG_HOST"
   fi
 
