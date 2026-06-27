@@ -329,9 +329,34 @@ If you decline, you can add SSH later with the `wg peer ssh` subcommand:
 
 | Command | Description |
 |---------|-------------|
-| `roundtable wg peer ssh new <name>` | Generate an SSH key for an existing foreign peer |
-| `roundtable wg peer ssh rm <name>` | Remove the SSH key |
-| `roundtable wg peer ssh config <name>` | Print connection info (host, key path) |
+| `roundtable wg peer ssh new [--type foreign] <name>` | Generate an SSH key for an existing foreign peer |
+| `roundtable wg peer ssh rm [--type foreign] <name>` | Remove the SSH key |
+| `roundtable wg peer ssh config [--type foreign] <name>` | Print connection info (host, key path) |
+
+When generating the first SSH key, you're prompted to set up the `roundtable` user's workspace:
+
+```bash
+  Set up roundtable user workspace (symlink, PATH, permissions)? [y/N] y
+  SSH: Setting up roundtable user workspace...
+  SSH: Linking /root/cli-roundtable → /home/roundtable/cli-roundtable
+  SSH: Adding /root/cli-roundtable to roundtable user PATH
+  SSH: Setting ACL permissions on /root/cli-roundtable for roundtable user
+  ✅ SSH user workspace configured. Log in as 'roundtable' and run: roundtable check
+```
+
+This creates:
+- **Symlink:** `/home/roundtable/cli-roundtable` → project root
+- **PATH:** `/home/roundtable/.bashrc` exports the project directory
+- **ACL:** `setfacl` grants the `roundtable` user read/write/execute on the project
+
+So after SSH'ing in, you can run commands directly:
+
+```bash
+roundtable@host:~$ roundtable check
+roundtable@host:~$ roundtable wg peers
+```
+
+**Detection in `roundtable check`:** If SSH keys exist but the workspace isn't configured, `roundtable check` shows a `[⚠]` warning. Use `check --fix` to set up interactively.
 
 The `roundtable` user is password-locked with passwordless sudo — only SSH key authentication is allowed, and only from within the WireGuard mesh via an sshd `Match` block (`/etc/ssh/sshd_config.d/99-roundtable.conf`).
 
