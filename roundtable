@@ -1445,80 +1445,75 @@ cmd_check() {
   echo ""
 
   if [ ${#errors[@]} -eq 0 ] && ! $workspace_warning; then
-    echo "  ✅ All checks passed. Host is ready."
-    return 0
-  fi
-
-  if [ ${#errors[@]} -eq 0 ] && $workspace_warning; then
-    echo ""
-    echo "  ⚠ All core checks passed. SSH user workspace not configured."
-    echo "    Run: sudo ./roundtable check --fix"
-    echo ""
-    return 1
-  fi
-
-  if $force; then
-    echo "  == Auto-fixing ${#errors[@]} issue(s)..."
-    echo ""
-
-    local i=0
-    for fix in "${fixes[@]}"; do
-      local err="${errors[$i]}"
-      echo "  [$((i+1))/${#errors[@]}] Fixing: ${err}"
-      if [[ "$fix" == apt\ install* ]]; then
-        if [[ $EUID -eq 0 ]]; then
-          apt-get update -qq 2>/dev/null || true
-          eval "$fix -qq" 2>/dev/null || true
-        else
-          sudo apt-get update -qq 2>/dev/null || true
-          eval "sudo $fix -qq" 2>/dev/null || true
-        fi
-      elif [[ "$fix" == curl* ]]; then
-        if [[ $EUID -eq 0 ]]; then
-          eval "$fix" 2>/dev/null || true
-        else
-          eval "sudo $fix" 2>/dev/null || true
-        fi
-      elif [[ "$fix" == roundtable* || "$fix" == cp\ .roundtable* ]]; then
-        eval "$fix" 2>/dev/null || true
-      elif [[ "$fix" == "dns" ]]; then
-        cmd_fix_dns
-      else
-        if [[ $EUID -eq 0 ]]; then
-          eval "$fix" 2>/dev/null || true
-        else
-          eval "sudo $fix" 2>/dev/null || true
-        fi
-      fi
-      i=$((i + 1))
-    done
-
-    # SSH workspace prompt (interactive, only in --fix mode)
-    if $workspace_warning; then
-      echo "" >&2
-      read -p "  Set up roundtable user workspace (symlink, PATH, permissions)? [y/N] " response
-      if [[ "$response" =~ ^[Yy]$ ]]; then
-        ssh_ensure_access
-      else
-        echo "  Skipped." >&2
-      fi
+      echo "  ✅ All checks passed. Host is ready."
+      return 0
     fi
 
-    echo ""
-    echo "  == Re-running checks..."
-    echo ""
-    cmd_check
-    return $?
-  fi
+    if $force; then
+      # Run auto-fixes for hard errors first
+      if [ ${#errors[@]} -gt 0 ]; then
+        echo "  == Auto-fixing ${#errors[@]} issue(s)..."
+        echo ""
 
-  # SSH workspace warning (non-fix mode)
-  if $workspace_warning; then
-    echo ""
-    echo "  ⚠ Notice: SSH user workspace not configured."
-    echo "    Run: sudo ./roundtable check --fix"
-    echo ""
-    return 1
-  fi
+        local i=0
+        for fix in "${fixes[@]}"; do
+          local err="${errors[$i]}"
+          echo "  [$((i+1))/${#errors[@]}] Fixing: ${err}"
+          if [[ "$fix" == apt\ install* ]]; then
+            if [[ $EUID -eq 0 ]]; then
+              apt-get update -qq 2>/dev/null || true
+              eval "$fix -qq" 2>/dev/null || true
+            else
+              sudo apt-get update -qq 2>/dev/null || true
+              eval "sudo $fix -qq" 2>/dev/null || true
+            fi
+          elif [[ "$fix" == curl* ]]; then
+            if [[ $EUID -eq 0 ]]; then
+              eval "$fix" 2>/dev/null || true
+            else
+              eval "sudo $fix" 2>/dev/null || true
+            fi
+          elif [[ "$fix" == roundtable* || "$fix" == cp\ .roundtable* ]]; then
+            eval "$fix" 2>/dev/null || true
+          elif [[ "$fix" == "dns" ]]; then
+            cmd_fix_dns
+          else
+            if [[ $EUID -eq 0 ]]; then
+              eval "$fix" 2>/dev/null || true
+            else
+              eval "sudo $fix" 2>/dev/null || true
+            fi
+          fi
+          i=$((i + 1))
+        done
+      fi
+
+      # Then prompt for workspace (interactive, only in --fix mode)
+      if $workspace_warning; then
+        echo "" >&2
+        read -p "  Set up roundtable user workspace (symlink, PATH, permissions)? [y/N] " response
+        if [[ "$response" =~ ^[Yy]$ ]]; then
+          ssh_ensure_access
+        else
+          echo "  Skipped." >&2
+        fi
+      fi
+
+      echo ""
+      echo "  == Re-running checks..."
+      echo ""
+      cmd_check
+      return $?
+    fi
+
+    # Non-fix mode warnings
+    if $workspace_warning && [ ${#errors[@]} -eq 0 ]; then
+      echo ""
+      echo "  ⚠ All core checks passed. SSH user workspace not configured."
+      echo "    Run: sudo ./roundtable check --fix"
+      echo ""
+      return 1
+    fi
 
   echo "  ❌ ${#errors[@]} issue(s) found. To auto-fix:"
   echo ""
