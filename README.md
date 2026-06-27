@@ -42,6 +42,7 @@ Your local machine      10.10.1.1    |    Wireguard VPN Server    |  10.10.1.3  
 **Key design decisions:**
 - **Agents are orchestrators, not runners.** LLM inference on OpenRouter's GPUs — agents orchestrate tool calls and relay API calls.
 - **Cluster topology lives on host wg0 only.** Agents are topology-agnostic — their wg0 targets just the host with `AllowedIPs = 10.0.0.0/8`. No agent config changes when hosts join/leave the cluster.
+- **Routes are persisted for reboot resilience.** Peers are stored as `[Peer]` sections in `/etc/wireguard/wg0.conf`. On system reboot, `wg-quick@wg0` re-reads the config and restores both the peer entries and their kernel routes.
 - **Config file transport for clustering.** Invite files are YAML configs exchanged out-of-band. No SSH dependency.
 - **Golden image pattern.** Build once (~1.4 GB, ~3-4 min), clone many (~30s each).
 - **Dir storage.** LXD uses `dir` backend — simple, no kernel module dependencies.
@@ -97,13 +98,15 @@ sudo ./roundtable agent gateway up arthur
 
 ### What happens during setup
 
-| Step | What runs | Time |
-|------|-----------|------|
-| `wg init` | Creates wg0, generates keys, enables systemd, inits state dir | ~3s |
-| `golden-image build vX` | Launches LXD temp container, installs Hermes + yq, publishes image | ~3–4 min |
-| `agent create arthur` | Clones golden image, creates WG peer, injects wg0.conf, enables tunnel | ~1 min |
-| `agent setup arthur` | Runs `hermes setup --run-as-user root` inside container | ~30s |
-| `agent gateway up arthur` | Installs & starts messaging gateway | ~10s |
+|| Step | What runs | Time |
+||------|-----------|------|
+|| `wg init` | Creates wg0, generates keys, enables systemd, inits state dir | ~3s |
+|| `golden-image build vX` | Launches LXD temp container, installs Hermes + yq, publishes image | ~3–4 min |
+|| `agent create arthur` | Clones golden image, creates WG peer, injects wg0.conf, enables tunnel | ~1 min |
+|| `agent setup arthur` | Runs `hermes setup --run-as-user root` inside container | ~30s |
+|| `agent gateway up arthur` | Installs & starts messaging gateway | ~10s |
+
+**Reboot resilience:** WireGuard peers and their routes are persisted in `/etc/wireguard/wg0.conf`. A host reboot automatically restores all peer connections via `wg-quick@wg0` — no manual recovery needed.
 
 ---
 
@@ -264,6 +267,19 @@ cluster: 10.0.0.0/8          # Informational (not used for routing)
 | Cluster scope | `10.0.0.0/8` | Agent AllowedIPs (routes everything through host) |
 | LXD bridge | `10.8.100.0/24` | Container outbound NAT |
 
+### Routing
+
+Each peer (`wg peer new`) gets a `/32` kernel route installed immediately and persisted in the config file. On host reboot, `wg-quick up` reads the persisted `[Peer]` sections and re-installs all routes. No manual recovery needed.
+
+```bash
+# Example: routes on a host with one agent (10.0.1.2) and one foreign peer (10.0.2.2)
+$ ip route show dev wg0
+10.0.1.2 scope link
+10.0.2.2 scope link
+```
+
+Cluster joins install routes for each remote subnet (e.g. `10.0.3.0/24`, `10.0.4.0/24`), which are also persisted for reboot recovery.
+
 ### Ports
 
 | Port | Service | Visibility |
@@ -351,6 +367,17 @@ The `roundtable-agent` golden image is built from Ubuntu 24.04 and published to 
 | Golden image OOM on 4 GB | `unsquashfs` spikes memory during publish | Create swap: `fallocate -l 1G /swapfile && mkswap && swapon` |
 | Golden image DNS timeout | systemd-resolved prefers IPv6 | `check --fix` diagnoses and applies IPv4 DNS |
 | AppArmor blocks wg-quick (Ubuntu 26.04+) | Restrictive default profile | `echo "network inet dgram," >> /etc/apparmor.d/local/wg-quick && apparmor_parser -r /etc/apparmor.d/wg-quick` |
+| **~~WireGuard peers unreachable after reboot~~** | ~~No routes persisted — only crypto peers restored~~ | **Fixed.** Peers now stored in `/etc/wireguard/wg0.conf` for automatic restoration |
+
+### Reboot resilience
+
+The host's `wg-quick@wg0` systemd service automatically reads `/etc/wireguard/wg0.conf` on boot. Since all peers are persisted as `[Peer]` sections:
+
+1. Peer crypto entries are restored via `wg setconf`
+2. Kernel routes for each peer's `AllowedIPs` are installed by `wg-quick`
+3. Agents and foreign peers reconnect as keepalives fire
+
+**No manual intervention needed after reboot.** All peer state (IP allocations in `ip-pool`/`foreign-ip-pool`, YAML records in `peers/`) is on disk and remains consistent.
 
 ---
 
