@@ -193,6 +193,29 @@ wg_get_own_pubkey() {
   fi
 }
 
+# Persist a peer section in the wg-quick config so routes are restored on boot.
+# wg-quick up reads [Peer] sections and installs ip route for each AllowedIPs.
+wg_config_add_peer() {
+  local name="$1" type="$2" pubkey="$3" allowed_ips="$4" endpoint="$5" keepalive="${6:-25}"
+  local conf="/etc/wireguard/${WG_INTERFACE}.conf"
+  cat >> "$conf" <<PEERSECTION
+
+# peer:${name}:${type}
+[Peer]
+PublicKey = ${pubkey}
+AllowedIPs = ${allowed_ips}
+Endpoint = ${endpoint}
+PersistentKeepalive = ${keepalive}
+PEERSECTION
+}
+
+# Remove a persisted peer section from the wg-quick config.
+wg_config_remove_peer() {
+  local name="$1" type="$2"
+  local conf="/etc/wireguard/${WG_INTERFACE}.conf"
+  sed -i "/^# peer:${name}:${type}$/,+5d" "$conf" 2>/dev/null || true
+}
+
 # ── Command implementations ──────────────────────────────────────
 
 cmd_wg() {
@@ -258,7 +281,8 @@ PrivateKey = $(cat /etc/wireguard/privatekey)
 ListenPort = ${WG_PORT}
 SaveConfig = false
 
-# Agent and cluster peers are managed by 'roundtable wg peer' / 'roundtable wg join'
+# Agents, foreign peers, and cluster peers are persisted below by
+# 'roundtable wg peer' / 'roundtable wg join' for reboot resilience.
 WGCONF
 
   # Enable IP forwarding
@@ -398,6 +422,9 @@ cmd_wg_peer_new() {
     echo "created: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$record_path"
 
+  # Persist peer section in wg-quick config for route restoration on boot
+  wg_config_add_peer "$name" "$peer_type" "$peer_pubkey" "${peer_ip}/32" "${WG_HOST}:${WG_PORT}"
+
   if [[ "$peer_type" == "agent" ]]; then
     # ── Agent config: save to .roundtable/peers/<name>.agent.conf ──
     local agent_conf_path; agent_conf_path=$(peer_config_path "$name" "agent")
@@ -512,6 +539,9 @@ cmd_wg_peer_rm() {
 
   wg_remove_peer "$peer_pubkey"
 
+  # Remove peer section from wg-quick config
+  wg_config_remove_peer "$name" "$peer_type"
+
   # Free IP from the correct pool
   local pool_file
   if [[ "$peer_type" == "agent" ]]; then
@@ -617,6 +647,9 @@ cmd_wg_join() {
     echo "created: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$record_path"
 
+  # Persist cluster peer section in wg-quick config for route restoration on boot
+  wg_config_add_peer "$name" "host" "$remote_pubkey" "$allowed_ips" "$remote_endpoint"
+
   # Track subnets in cluster-subnets list
   subnet_list_add "$remote_agents"
   [[ -n "$remote_foreign" ]] && subnet_list_add "$remote_foreign"
@@ -645,6 +678,9 @@ cmd_wg_leave() {
   echo "==> Leaving cluster peer '${name}'..." >&2
 
   wg_remove_peer "$peer_pubkey"
+
+  # Remove cluster peer section from wg-quick config
+  wg_config_remove_peer "$name" "host"
 
   # Read subnets before deleting the record
   local agents_sub foreign_sub
