@@ -10,9 +10,9 @@ usage() {
   printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign: optional SSH."
   printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
   printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
-  printf "  %-42s %s\n" "wg peer ssh new <name>" "Generate SSH key for foreign peer"
-  printf "  %-42s %s\n" "wg peer ssh rm <name>" "Remove SSH key for foreign peer"
-  printf "  %-42s %s\n" "wg peer ssh config <name>" "Print SSH connection info"
+  printf "  %-42s %s\n" "wg peer ssh new [--type foreign] <name>" "Generate SSH key for foreign peer"
+  printf "  %-42s %s\n" "wg peer ssh rm [--type foreign] <name>" "Remove SSH key for foreign peer"
+  printf "  %-42s %s\n" "wg peer ssh config [--type foreign] <name>" "Print SSH connection info"
   printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
   printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
   printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
@@ -678,10 +678,21 @@ cmd_wg_peer_ssh() {
 }
 
 cmd_wg_peer_ssh_new() {
-  local name="${1:?Usage: roundtable wg peer ssh new <name>}"
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer ssh new [--type agent|foreign|host] <name>" >&2; exit 1; }
+  [[ "$peer_type" == "foreign" ]] || { echo "Error: SSH keys only supported for 'foreign' peers, not '${peer_type}'" >&2; exit 1; }
+
   load_config
 
-  # Verify it's a foreign peer
   local record_path; record_path=$(peer_record_path "$name" "foreign")
   [[ -f "$record_path" ]] || { echo "Error: foreign peer '${name}' not found" >&2; exit 1; }
 
@@ -702,7 +713,19 @@ cmd_wg_peer_ssh_new() {
 }
 
 cmd_wg_peer_ssh_rm() {
-  local name="${1:?Usage: roundtable wg peer ssh rm <name>}"
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer ssh rm [--type agent|foreign|host] <name>" >&2; exit 1; }
+  [[ "$peer_type" == "foreign" ]] || { echo "Error: SSH keys only supported for 'foreign' peers, not '${peer_type}'" >&2; exit 1; }
+
   load_config
 
   local ssh_key_path; ssh_key_path=$(peer_config_path "$name" "foreign" | sed 's/\.conf$/.ssh-key/')
@@ -717,7 +740,19 @@ cmd_wg_peer_ssh_rm() {
 }
 
 cmd_wg_peer_ssh_config() {
-  local name="${1:?Usage: roundtable wg peer ssh config <name>}"
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer ssh config [--type agent|foreign|host] <name>" >&2; exit 1; }
+  [[ "$peer_type" == "foreign" ]] || { echo "Error: SSH keys only supported for 'foreign' peers, not '${peer_type}'" >&2; exit 1; }
+
   load_config
 
   local record_path; record_path=$(peer_record_path "$name" "foreign")

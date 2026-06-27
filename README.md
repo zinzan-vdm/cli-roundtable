@@ -126,9 +126,9 @@ roundtable wg peer config <name>      # Print foreign peer config (default type:
 roundtable wg peer config --type agent <name>  # Print agent peer config
 roundtable wg peer rm <name>          # Remove foreign peer (also removes SSH key)
 roundtable wg peer rm --type agent <name>  # Remove agent peer
-roundtable wg peer ssh new <name>     # Generate SSH key for foreign peer
-roundtable wg peer ssh rm <name>      # Remove SSH key for foreign peer
-roundtable wg peer ssh config <name>  # Print SSH connection info
+roundtable wg peer ssh new [--type foreign] <name>     # Generate SSH key for foreign peer
+roundtable wg peer ssh rm [--type foreign] <name>     # Remove SSH key for foreign peer
+roundtable wg peer ssh config [--type foreign] <name> # Print SSH connection info
 roundtable wg invite                  # Generate anonymous cluster invitation
 roundtable wg join <name> <invite>    # Connect to a remote mesh (host type)
 roundtable wg leave <name>            # Disconnect from a remote mesh
