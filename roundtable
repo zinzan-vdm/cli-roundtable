@@ -7,9 +7,12 @@ usage() {
   echo "WireGuard networking:"
   printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
   printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
-  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign peers also get SSH access."
+  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign: optional SSH."
   printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
   printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
+  printf "  %-42s %s\n" "wg peer ssh new [--type foreign] <name>" "Generate SSH key for foreign peer"
+  printf "  %-42s %s\n" "wg peer ssh rm [--type foreign] <name>" "Remove SSH key for foreign peer"
+  printf "  %-42s %s\n" "wg peer ssh config [--type foreign] <name>" "Print SSH connection info"
   printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
   printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
   printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
@@ -402,6 +405,7 @@ cmd_wg_peer() {
     new)    cmd_wg_peer_new "$@" ;;
     config) cmd_wg_peer_config "$@" ;;
     rm)     cmd_wg_peer_rm "$@" ;;
+    ssh)    cmd_wg_peer_ssh "$@" ;;
     *)      usage ;;
   esac
 }
@@ -528,12 +532,18 @@ FOREIGN_CONFIG
     cat "$foreign_conf_path"
     echo "" >&2
 
-    # ── SSH access for foreign peers ──
-    ssh_ensure_user
-    local ssh_key_path; ssh_key_path=$(peer_config_path "$name" "foreign" | sed 's/\.conf$/.ssh-key/')
-    ssh-keygen -t ed25519 -f "$ssh_key_path" -N "" -C "roundtable:${name}" -q 2>/dev/null
-    ssh_install_key "$name" "$(cat "${ssh_key_path}.pub")"
-    echo "    SSH: ssh ${SSH_USER}@${host_ip} -i ${ssh_key_path}" >&2
+    # ── Optional SSH access for foreign peers ──
+    if [[ -t 0 ]]; then
+      # Interactive terminal — ask
+      echo "  SSH access (optional):" >&2
+      read -p "  Generate SSH key for admin access? [y/N] " -r response
+      echo "" >&2
+    else
+      response=""
+    fi
+    if [[ "$response" =~ ^[Yy]$ ]]; then
+      cmd_wg_peer_ssh_new "$name" 2>&1
+    fi
   fi
 }
 
@@ -651,6 +661,116 @@ cmd_wg_peer_rm() {
   fi
 
   echo "    Peer removed." >&2
+}
+
+# ── SSH key management ────────────────────────────────────────
+# Manage SSH keys for foreign peers independently of peer creation.
+# Usage: roundtable wg peer ssh new|rm|config [--type agent|foreign|host] <name>
+
+cmd_wg_peer_ssh() {
+  local action="${1:-}"; shift 2>/dev/null || true
+  case "$action" in
+    new)    cmd_wg_peer_ssh_new "$@" ;;
+    rm)     cmd_wg_peer_ssh_rm "$@" ;;
+    config) cmd_wg_peer_ssh_config "$@" ;;
+    *)      echo "Usage: roundtable wg peer ssh new|rm|config [--type agent|foreign|host] <name>" >&2; exit 1 ;;
+  esac
+}
+
+cmd_wg_peer_ssh_new() {
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer ssh new [--type agent|foreign|host] <name>" >&2; exit 1; }
+  [[ "$peer_type" == "foreign" ]] || { echo "Error: SSH keys only supported for 'foreign' peers, not '${peer_type}'" >&2; exit 1; }
+
+  load_config
+
+  local record_path; record_path=$(peer_record_path "$name" "foreign")
+  [[ -f "$record_path" ]] || { echo "Error: foreign peer '${name}' not found" >&2; exit 1; }
+
+  local host_ip
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+
+  ssh_ensure_user
+  local ssh_key_path; ssh_key_path=$(peer_config_path "$name" "foreign" | sed 's/\.conf$/.ssh-key/')
+
+  if [[ -f "$ssh_key_path" ]]; then
+    echo "    SSH key already exists for '${name}': ssh ${SSH_USER}@${host_ip} -i ${ssh_key_path}" >&2
+    return
+  fi
+
+  ssh-keygen -t ed25519 -f "$ssh_key_path" -N "" -C "roundtable:${name}" -q 2>/dev/null
+  ssh_install_key "$name" "$(cat "${ssh_key_path}.pub")"
+  echo "    SSH key generated for '${name}': ssh ${SSH_USER}@${host_ip} -i ${ssh_key_path}" >&2
+}
+
+cmd_wg_peer_ssh_rm() {
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer ssh rm [--type agent|foreign|host] <name>" >&2; exit 1; }
+  [[ "$peer_type" == "foreign" ]] || { echo "Error: SSH keys only supported for 'foreign' peers, not '${peer_type}'" >&2; exit 1; }
+
+  load_config
+
+  local ssh_key_path; ssh_key_path=$(peer_config_path "$name" "foreign" | sed 's/\.conf$/.ssh-key/')
+  if [[ ! -f "$ssh_key_path" ]]; then
+    echo "    No SSH key found for '${name}'." >&2
+    return
+  fi
+
+  ssh_remove_key "$name"
+  rm -f "$ssh_key_path" "${ssh_key_path}.pub" 2>/dev/null || true
+  echo "    SSH key removed for '${name}'." >&2
+}
+
+cmd_wg_peer_ssh_config() {
+  local name="" peer_type="foreign"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --type) peer_type="${2:-foreign}"; shift 2 ;;
+      --type=*) peer_type="${1#*=}"; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable wg peer ssh config [--type agent|foreign|host] <name>" >&2; exit 1; }
+  [[ "$peer_type" == "foreign" ]] || { echo "Error: SSH keys only supported for 'foreign' peers, not '${peer_type}'" >&2; exit 1; }
+
+  load_config
+
+  local record_path; record_path=$(peer_record_path "$name" "foreign")
+  [[ -f "$record_path" ]] || { echo "Error: foreign peer '${name}' not found" >&2; exit 1; }
+
+  local host_ip
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+  local ssh_key_path; ssh_key_path=$(peer_config_path "$name" "foreign" | sed 's/\.conf$/.ssh-key/')
+
+  if [[ ! -f "$ssh_key_path" ]]; then
+    echo "    No SSH key configured for '${name}'." >&2
+    echo "    Generate one: roundtable wg peer ssh new ${name}" >&2
+    return
+  fi
+
+  echo "    SSH: ssh ${SSH_USER}@${host_ip} -i ${ssh_key_path}" >&2
+  echo "    Key: ${ssh_key_path}" >&2
+  echo "    To copy to your laptop: scp root@<host>:\"${ssh_key_path}\" ~/.ssh/roundtable-${name}" >&2
 }
 
 cmd_wg_invite() {
