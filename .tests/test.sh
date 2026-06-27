@@ -170,6 +170,7 @@ test -L /home/roundtable/cli-roundtable && pass "2A.41 Symlink exists" || fail "
 [[ "$(readlink -f /home/roundtable/cli-roundtable)" == "$(readlink -f .)" ]] && pass "2A.42 Symlink targets project" || fail "2A.42 target"
 grep -q "cli-roundtable" /home/roundtable/.bashrc && pass "2A.43 PATH in .bashrc" || fail "2A.43 .bashrc"
 sudo getfacl /root/cli-roundtable/roundtable 2>/dev/null | grep -q "user:roundtable:r.." && pass "2A.44 ACL read access" || fail "2A.44 ACL"
+sudo getfacl /root 2>/dev/null | grep -q "user:roundtable:r-x" && pass "2A.44b /root traverse ACL" || fail "2A.44b root traverse"
 
 # Second call — workspace already set up, no prompt
 out=$(sudo ./roundtable wg peer ssh new ws-test 2>&1)

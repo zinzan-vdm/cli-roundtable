@@ -312,6 +312,12 @@ ssh_ensure_access() {
   setfacl -R -m u:roundtable:rwX "$ROOT"
   setfacl -R -d -m u:roundtable:rwX "$ROOT" 2>/dev/null || true
 
+  # Allow traverse into /root so the roundtable user can follow the symlink
+  if ! getfacl /root 2>/dev/null | grep -q "user:roundtable:r-x"; then
+    echo "  SSH: Granting traverse on /root for roundtable user" >&2
+    setfacl -m u:roundtable:rx /root
+  fi
+
   echo "  ✅ SSH user workspace configured. Log in as 'roundtable' and run: roundtable check" >&2
 }
 
