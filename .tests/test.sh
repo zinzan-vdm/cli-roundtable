@@ -23,6 +23,9 @@ cleanup() {
   sudo ./roundtable wg leave loopback 2>/dev/null || true
   sudo ./roundtable wg peer rm --type agent persist-test 2>/dev/null || true
   sudo ./roundtable wg peer rm restore-test 2>/dev/null || true
+  sudo ./roundtable wg peer rm ssh-test 2>/dev/null || true
+  sudo userdel -r roundtable 2>/dev/null || true
+  sudo rm -f /etc/ssh/sshd_config.d/99-roundtable.conf /etc/sudoers.d/99-roundtable
   rm -f /tmp/host-a.yml /tmp/host-a-2.yml /tmp/bad.yml /tmp/invite-test.yml
 }
 
@@ -51,6 +54,8 @@ ip link show wg0 &>/dev/null && pass "0.11 wg0 exists" || fail "0.11 wg0"
 test -f .roundtable/ip-pool && pass "0.12 IP pool" || fail "0.12 pool"
 test -d .roundtable/peers && pass "0.13 Peers dir" || fail "0.13 peers"
 ! git check-ignore config.example.yml &>/dev/null && pass "0.14 Config not gitignored" || fail "0.14 gitignored"
+command -v ssh-keygen &>/dev/null && pass "0.15 ssh-keygen" || fail "0.15 ssh-keygen"
+command -v ssh &>/dev/null && pass "0.16 ssh client" || fail "0.16 ssh"
 
 # ── Phase 1: wg state ──
 echo ""
@@ -92,6 +97,23 @@ test ! -f .roundtable/peers/c-test.foreign.yml && pass "2A.13 Record deleted" ||
 test ! -f .roundtable/peers/c-test.foreign.conf && pass "2A.14 Config deleted" || fail "2A.14 config"
 ! ip route show dev wg0 | grep -q "$peer_ip" && pass "2A.15 Route removed" || fail "2A.15 route still present"
 ! grep -q "peer:c-test" /etc/wireguard/wg0.conf && pass "2A.16 Config section cleaned" || fail "2A.16 config still has section"
+
+# ── SSH access test ──
+out=$(sudo ./roundtable wg peer new --type foreign ssh-test 2>&1)
+echo "$out" | grep -q "SSH:" && pass "2A.17 SSH command printed" || fail "2A.17: $(echo "$out" | head -1)"
+host_ip=$(ip addr show wg0 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "")
+echo "$out" | grep -q "ssh.*@${host_ip}" && pass "2A.18 SSH target is WG mesh IP (${host_ip})" || fail "2A.18 ssh target"
+test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.19 SSH private key saved" || fail "2A.19 ssh-key"
+test -f .roundtable/peers/ssh-test.foreign.ssh-key.pub && pass "2A.20 SSH public key saved" || fail "2A.20 ssh-key.pub"
+id roundtable &>/dev/null && pass "2A.21 roundtable user exists" || fail "2A.21 user"
+echo "$(sudo cat /etc/sudoers.d/99-roundtable)" | grep -q "NOPASSWD:ALL" && pass "2A.22 Passwordless sudo" || fail "2A.22 sudo"
+grep -q "roundtable" /home/roundtable/.ssh/authorized_keys && pass "2A.23 SSH key in authorized_keys" || fail "2A.23 authorized_keys"
+test -f /etc/ssh/sshd_config.d/99-roundtable.conf && pass "2A.24 sshd Match block installed" || fail "2A.24 match block"
+grep -q "Address 10.0.0.0/8" /etc/ssh/sshd_config.d/99-roundtable.conf && pass "2A.25 Match restricts to WG subnet" || fail "2A.25 subnet match"
+out=$(sudo ./roundtable wg peer rm ssh-test 2>&1)
+echo "$out" | grep -qi "removed" && pass "2A.26 Cleanup ssh-test" || fail "2A.26: $out"
+! grep -q "peer:ssh-test" /home/roundtable/.ssh/authorized_keys && pass "2A.27 SSH key removed from authorized_keys" || fail "2A.27 key still present"
+! test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.28 SSH key files cleaned" || fail "2A.28 ssh-key files still exist"
 
 # ── Phase 2B: Agent peer lifecycle ──
 echo ""

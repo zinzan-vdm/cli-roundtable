@@ -7,7 +7,7 @@ usage() {
   echo "WireGuard networking:"
   printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
   printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
-  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config (default: foreign)"
+  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign peers also get SSH access."
   printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
   printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
   printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
