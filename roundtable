@@ -665,7 +665,7 @@ cmd_wg_peer_rm() {
 
 # ── SSH key management ────────────────────────────────────────
 # Manage SSH keys for foreign peers independently of peer creation.
-# Usage: roundtable wg peer ssh new|rm|config <name>
+# Usage: roundtable wg peer ssh new|rm|config [--type agent|foreign|host] <name>
 
 cmd_wg_peer_ssh() {
   local action="${1:-}"; shift 2>/dev/null || true
@@ -673,7 +673,7 @@ cmd_wg_peer_ssh() {
     new)    cmd_wg_peer_ssh_new "$@" ;;
     rm)     cmd_wg_peer_ssh_rm "$@" ;;
     config) cmd_wg_peer_ssh_config "$@" ;;
-    *)      echo "Usage: roundtable wg peer ssh new|rm|config <name>" >&2; exit 1 ;;
+    *)      echo "Usage: roundtable wg peer ssh new|rm|config [--type agent|foreign|host] <name>" >&2; exit 1 ;;
   esac
 }
 
