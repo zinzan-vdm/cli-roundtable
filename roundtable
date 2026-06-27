@@ -14,6 +14,7 @@ usage() {
   printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
   printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
   printf "  %-42s %s\n" "wg peers" "List all peers (agents + clusters)"
+  printf "  %-42s %s\n" "wg restore" "Sync config + routes from saved records (post-upgrade)"
   echo ""
   echo "Agents:"
   printf "  %-42s %s\n" "golden-image build <version>" "Build golden image"
@@ -229,6 +230,7 @@ cmd_wg() {
     join)   cmd_wg_join "$@" ;;
     leave)  cmd_wg_leave "$@" ;;
     peers)  cmd_wg_peers ;;
+    restore) cmd_wg_restore ;;
     *)      usage ;;
   esac
 }
@@ -750,6 +752,83 @@ cmd_wg_peers() {
       printf "%-20s %-18s %-10s %s\n" "$record_name" "$display_ip" "$record_type" "$status"
     done
   fi
+}
+
+cmd_wg_restore() {
+  # Sync wg-quick config and kernel routes from .roundtable/peers/ records.
+  # Does NOT modify runtime wg0 — existing peer connections stay up.
+  # Use this after upgrading roundtable to persist old peers into the new
+  # config format for reboot resilience.
+  load_config
+  wg_ensure_interface
+  init_state_dir
+
+  local added=0 missing=0 skipped=0
+  local wg_conf="/etc/wireguard/${WG_INTERFACE}.conf"
+
+  echo "==> Restoring peers from ${PEERS_DIR}..." >&2
+
+  for record in "$PEERS_DIR"/*.yml; do
+    [[ -f "$record" ]] || continue
+
+    local name type pubkey ip
+    name=$(yq '.name // ""' "$record")
+    type=$(yq '.type // ""' "$record")
+    pubkey=$(yq '.public_key // ""' "$record")
+
+    [[ -n "$name" && -n "$type" ]] || { missing=$((missing + 1)); continue; }
+
+    if [[ "$type" == "host" ]]; then
+      local agents_sub foreign_sub endpoint
+      agents_sub=$(yq '.subnets.agents // ""' "$record")
+      foreign_sub=$(yq '.subnets.foreign // ""' "$record")
+      endpoint=$(yq '.endpoint // ""' "$record")
+      local allowed_ips="$agents_sub"
+      [[ -n "$foreign_sub" ]] && allowed_ips="${allowed_ips},${foreign_sub}"
+
+      # Config peer section
+      if grep -q "^# peer:${name}:host" "$wg_conf" 2>/dev/null; then
+        skipped=$((skipped + 1))
+      else
+        wg_config_add_peer "$name" "host" "$pubkey" "$allowed_ips" "$endpoint"
+        echo "    config: added host peer '${name}'" >&2
+      fi
+
+      # Routes for remote subnets
+      local subnet
+      for subnet in "$agents_sub" "$foreign_sub"; do
+        [[ -n "$subnet" ]] || continue
+        if ! ip route show dev "$WG_INTERFACE" | grep -qF "$subnet" 2>/dev/null; then
+          ip route replace "$subnet" dev "$WG_INTERFACE" 2>/dev/null || true
+          echo "    route: added ${subnet}" >&2
+        fi
+      done
+    else
+      ip=$(yq '.ip // ""' "$record")
+      [[ -n "$ip" ]] || { missing=$((missing + 1)); continue; }
+
+      # Ensure peer is in runtime wg0 (idempotent — harmless if already present)
+      wg_add_peer "$pubkey" "${ip}/32" "${WG_HOST}:${WG_PORT}" 2>/dev/null || true
+
+      # Config peer section
+      if grep -q "^# peer:${name}:${type}" "$wg_conf" 2>/dev/null; then
+        skipped=$((skipped + 1))
+      else
+        wg_config_add_peer "$name" "$type" "$pubkey" "${ip}/32" "${WG_HOST}:${WG_PORT}"
+        echo "    config: added ${type} peer '${name}' (${ip})" >&2
+      fi
+
+      # Route
+      if ! ip route show dev "$WG_INTERFACE" | grep -qF "$ip" 2>/dev/null; then
+        ip route replace "${ip}/32" dev "$WG_INTERFACE" 2>/dev/null || true
+        echo "    route: added ${ip}" >&2
+      fi
+    fi
+
+    added=$((added + 1))
+  done
+
+  echo "    Done: ${added} peers processed, ${skipped} already current, ${missing} records with missing data." >&2
 }
 
 # ── Golden image ─────────────────────────────────────────────────
