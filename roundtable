@@ -7,7 +7,7 @@ usage() {
   echo "WireGuard networking:"
   printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
   printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
-  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config (default: foreign)"
+  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign peers also get SSH access."
   printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
   printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
   printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
@@ -215,6 +215,68 @@ wg_config_remove_peer() {
   local name="$1" type="$2"
   local conf="/etc/wireguard/${WG_INTERFACE}.conf"
   sed -i "/^# peer:${name}:${type}$/,+5d" "$conf" 2>/dev/null || true
+}
+
+# ── SSH access helpers ────────────────────────────────────────────
+# Foreign (admin/laptop) peers get SSH access as the 'roundtable' user,
+# restricted to the WireGuard mesh subnet via an sshd Match block.
+# The WG crypto keypair is the only auth needed — no passwords.
+
+SSH_USER="roundtable"
+SSH_HOME="/home/${SSH_USER}"
+SSH_AUTH_KEYS="${SSH_HOME}/.ssh/authorized_keys"
+SSHD_MATCH_CONF="/etc/ssh/sshd_config.d/99-roundtable.conf"
+
+ssh_ensure_user() {
+  # Create the roundtable user if missing (idempotent)
+  if ! id "$SSH_USER" &>/dev/null; then
+    echo "  SSH: creating '${SSH_USER}' user..." >&2
+    useradd -m -s /bin/bash "$SSH_USER"
+    passwd -l "$SSH_USER" &>/dev/null || true
+    echo "${SSH_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/99-${SSH_USER}"
+    chmod 440 "/etc/sudoers.d/99-${SSH_USER}"
+  fi
+
+  # Ensure .ssh directory with correct permissions
+  mkdir -p "${SSH_HOME}/.ssh"
+  chmod 700 "${SSH_HOME}/.ssh"
+
+  # Ensure authorized_keys exists
+  touch "$SSH_AUTH_KEYS"
+  chmod 600 "$SSH_AUTH_KEYS"
+  chown -R "${SSH_USER}:${SSH_USER}" "$SSH_HOME"
+
+  # Install sshd Match block if not already present
+  if [[ ! -f "$SSHD_MATCH_CONF" ]]; then
+    echo "  SSH: installing sshd Match block (restrict to 10.0.0.0/8)..." >&2
+    cat > "$SSHD_MATCH_CONF" <<SSHDCONF
+# Managed by roundtable — restricts SSH access for the '${SSH_USER}' user
+# to the WireGuard mesh subnet. Does not affect other users.
+Match User ${SSH_USER} Address 10.0.0.0/8
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+SSHDCONF
+    chmod 644 "$SSHD_MATCH_CONF"
+    # Reload sshd to pick up the new config
+    if systemctl is-active sshd &>/dev/null; then
+      systemctl reload sshd 2>/dev/null || true
+    elif systemctl is-active ssh &>/dev/null; then
+      systemctl reload ssh 2>/dev/null || true
+    fi
+  fi
+}
+
+ssh_install_key() {
+  local name="$1" pubkey="$2"
+  # Add a marker + key pair so we can remove it by peer name later
+  echo "# peer:${name}" >> "$SSH_AUTH_KEYS"
+  echo "${pubkey}" >> "$SSH_AUTH_KEYS"
+}
+
+ssh_remove_key() {
+  local name="$1"
+  # Remove the marker line and the key line that follows
+  sed -i "/^# peer:${name}$/,+1d" "$SSH_AUTH_KEYS" 2>/dev/null || true
 }
 
 # ── Command implementations ──────────────────────────────────────
@@ -464,6 +526,14 @@ Endpoint = ${WG_HOST}:${WG_PORT}
 PersistentKeepalive = ${PERSISTENT_KEEPALIVE}
 FOREIGN_CONFIG
     cat "$foreign_conf_path"
+    echo "" >&2
+
+    # ── SSH access for foreign peers ──
+    ssh_ensure_user
+    local ssh_key_path; ssh_key_path=$(peer_config_path "$name" "foreign" | sed 's/\.conf$/.ssh-key/')
+    ssh-keygen -t ed25519 -f "$ssh_key_path" -N "" -C "roundtable:${name}" -q 2>/dev/null
+    ssh_install_key "$name" "$(cat "${ssh_key_path}.pub")"
+    echo "    SSH: ssh ${SSH_USER}@${host_ip} -i ${ssh_key_path}" >&2
   fi
 }
 
@@ -571,6 +641,13 @@ cmd_wg_peer_rm() {
   local conf_path; conf_path=$(peer_config_path "$name" "$peer_type" 2>/dev/null || echo "")
   if [[ -n "$conf_path" && -f "$conf_path" ]]; then
     rm -f "$conf_path"
+  fi
+
+  # Clean up SSH key for foreign peers
+  if [[ "$peer_type" == "foreign" ]]; then
+    ssh_remove_key "$name"
+    local ssh_key_path; ssh_key_path=$(peer_config_path "$name" "foreign" | sed 's/\.conf$/.ssh-key/')
+    rm -f "$ssh_key_path" "${ssh_key_path}.pub" 2>/dev/null || true
   fi
 
   echo "    Peer removed." >&2

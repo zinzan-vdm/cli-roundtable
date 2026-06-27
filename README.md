@@ -94,6 +94,8 @@ sudo ./roundtable agent gateway up arthur
 # 6. Generate a WireGuard config for your laptop (optional)
 ./roundtable wg peer new laptop    # creates a foreign peer (default), prints WG config
 # Save the output to a file and import it in your laptop's WireGuard app
+# The SSH access command is printed alongside — use it to manage the cluster
+#   SSH: ssh roundtable@10.0.1.1 -i .roundtable/peers/laptop.foreign.ssh-key
 ```
 
 ### What happens during setup
@@ -118,10 +120,11 @@ sudo ./roundtable agent gateway up arthur
 roundtable wg init [--force]          # Initialize host wg0 mesh (idempotent)
 roundtable wg up|down                 # Bring wg0 up/down
 roundtable wg peer new <name>         # Create foreign WireGuard peer (laptop/admin, default)
-roundtable wg peer new --type agent <name>  # Create agent WireGuard peer
+                                     #   Also generates SSH key for roundtable user
+roundtable wg peer new --type agent <name>  # Create agent WireGuard peer (no SSH)
 roundtable wg peer config <name>      # Print foreign peer config (default type: foreign)
 roundtable wg peer config --type agent <name>  # Print agent peer config
-roundtable wg peer rm <name>          # Remove foreign peer (default type: foreign)
+roundtable wg peer rm <name>          # Remove foreign peer (also removes SSH key)
 roundtable wg peer rm --type agent <name>  # Remove agent peer
 roundtable wg invite                  # Generate anonymous cluster invitation
 roundtable wg join <name> <invite>    # Connect to a remote mesh (host type)
@@ -307,6 +310,28 @@ Each agent gets a WireGuard config injected at creation. The agent's wg0 targets
 - Agents can reach admin machines on the foreign subnet
 - Hermes dashboard (`:9119`) and API (`:8642`) are accessible over the mesh
 - Internet traffic goes through eth0 (LXD bridge) — unaffected by wg0
+
+### SSH access (foreign peers)
+
+Foreign peers (admin/laptop) automatically get SSH access as the `roundtable` user. The user is password-locked with passwordless sudo — only SSH key authentication is allowed, and only from within the WireGuard mesh.
+
+```bash
+# Creating a foreign peer prints the SSH command:
+$ sudo ./roundtable wg peer new laptop
+    IP: 10.0.2.2 (foreign)
+    SSH: ssh roundtable@10.0.1.1 -i .roundtable/peers/laptop.foreign.ssh-key
+```
+
+The host uses an sshd `Match` block (`/etc/ssh/sshd_config.d/99-roundtable.conf`) to restrict the `roundtable` user to `10.0.0.0/8` — unreachable from the public internet. Deleting the peer removes the SSH key from `authorized_keys`.
+
+```bash
+# From your laptop (connected via WireGuard):
+scp root@<host-ip>:.roundtable/peers/laptop.foreign.ssh-key ~/.ssh/roundtable-laptop
+ssh roundtable@10.0.1.1 -i ~/.ssh/roundtable-laptop
+
+# You have sudo:
+roundtable@host:~$ sudo ./roundtable wg peers
+```
 
 ---
 
