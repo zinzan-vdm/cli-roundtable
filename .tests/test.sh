@@ -24,6 +24,7 @@ cleanup() {
   sudo ./roundtable wg peer rm --type agent persist-test 2>/dev/null || true
   sudo ./roundtable wg peer rm restore-test 2>/dev/null || true
   sudo ./roundtable wg peer rm ssh-test 2>/dev/null || true
+  sudo ./roundtable wg peer rm ws-test 2>/dev/null || true
   sudo userdel -r roundtable 2>/dev/null || true
   sudo rm -f /etc/ssh/sshd_config.d/99-roundtable.conf /etc/sudoers.d/99-roundtable
   rm -f /tmp/host-a.yml /tmp/host-a-2.yml /tmp/bad.yml /tmp/invite-test.yml
@@ -106,7 +107,7 @@ echo "$out" | grep -q "foreign" && pass "2A.17 Create foreign (no SSH)" || fail 
 ! test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.18 No SSH key without confirmation" || fail "2A.18 SSH key was generated unexpectedly"
 
 # Test 2: wg peer ssh new — generate key for existing peer
-out=$(sudo ./roundtable wg peer ssh new ssh-test 2>&1)
+out=$(echo "" | sudo ./roundtable wg peer ssh new ssh-test 2>&1)
 echo "$out" | grep -q "SSH key generated" && pass "2A.19 wg peer ssh new generates key" || fail "2A.19: $out"
 test -f .roundtable/peers/ssh-test.foreign.ssh-key && pass "2A.20 SSH private key saved" || fail "2A.20 ssh-key"
 test -f .roundtable/peers/ssh-test.foreign.ssh-key.pub && pass "2A.21 SSH public key saved" || fail "2A.21 ssh-key.pub"
@@ -150,6 +151,34 @@ echo "$out" | grep -q "Generate one" && pass "2A.36 ssh config suggests generati
 # Test 8: cleanup the peer
 out=$(sudo ./roundtable wg peer rm ssh-test 2>&1)
 echo "$out" | grep -qi "removed" && pass "2A.37 Cleanup ssh-test" || fail "2A.37: $out"
+
+# ── Workspace setup tests (using ws-test) ──
+echo ""
+echo "── Phase 2A (cont): Workspace setup ──"
+
+# Create a peer for workspace testing
+out=$(echo "" | sudo ./roundtable wg peer new --type foreign ws-test 2>&1)
+echo "$out" | grep -q "foreign" && pass "2A.38 Create ws-test" || fail "2A.38: $(echo \"$out\" | head -1)"
+
+# Generate SSH key with 'y' for workspace setup
+out=$(echo "y" | sudo ./roundtable wg peer ssh new ws-test 2>&1)
+echo "$out" | grep -q "SSH key generated" && pass "2A.39 SSH key generated" || fail "2A.39: $out"
+echo "$out" | grep -qi "workspace" && pass "2A.40 Workspace prompt shown" || fail "2A.40: no workspace prompt"
+
+# Verify workspace setup
+test -L /home/roundtable/cli-roundtable && pass "2A.41 Symlink exists" || fail "2A.41 symlink"
+[[ "$(readlink -f /home/roundtable/cli-roundtable)" == "$(readlink -f .)" ]] && pass "2A.42 Symlink targets project" || fail "2A.42 target"
+grep -q "cli-roundtable" /home/roundtable/.bashrc && pass "2A.43 PATH in .bashrc" || fail "2A.43 .bashrc"
+sudo getfacl /root/cli-roundtable/roundtable 2>/dev/null | grep -q "user:roundtable:r.." && pass "2A.44 ACL read access" || fail "2A.44 ACL"
+
+# Second call — workspace already set up, no prompt
+out=$(sudo ./roundtable wg peer ssh new ws-test 2>&1)
+echo "$out" | grep -q "already exists" && pass "2A.45 Idempotent (no workspace re-prompt)" || fail "2A.45: $out"
+! echo "$out" | grep -qi "workspace" && pass "2A.46 No duplicate workspace prompt" || fail "2A.46 re-prompted"
+
+# Cleanup ws-test
+sudo ./roundtable wg peer ssh rm ws-test 2>&1 > /dev/null
+sudo ./roundtable wg peer rm ws-test 2>&1 > /dev/null
 
 # ── Phase 2B: Agent peer lifecycle ──
 echo ""
@@ -264,6 +293,7 @@ echo "$out" | grep -q "config.yml" && pass "6.3 Config check" || fail "6.3 confi
 echo "$out" | grep -qi "forward" && pass "6.4 Forwarding check" || fail "6.4 forward"
 echo "$out" | grep -qi "swap" && pass "6.5 Swap check" || fail "6.5 swap"
 echo "$out" | grep -qi "Python" && pass "6.6 Python check" || fail "6.6 Python"
+echo "$out" | grep -qi "SSH user workspace" && pass "6.7 SSH workspace check" || fail "6.7 SSH workspace"
 
 # ── Phase 7: Reboot resilience ──
 echo ""

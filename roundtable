@@ -282,6 +282,39 @@ ssh_remove_key() {
   sed -i "/^# peer:${name}$/,+1d" "$SSH_AUTH_KEYS" 2>/dev/null || true
 }
 
+ssh_access_is_setup() {
+  [[ -L "${SSH_HOME}/cli-roundtable" ]] && \
+    [[ "$(readlink -f "${SSH_HOME}/cli-roundtable")" == "$(readlink -f "$ROOT")" ]]
+}
+
+ssh_ensure_access() {
+  echo "  SSH: Setting up roundtable user workspace..." >&2
+
+  # Install ACL package if needed
+  if ! command -v setfacl &>/dev/null; then
+    echo "  SSH: Installing acl package..." >&2
+    apt-get install -y acl -qq 2>/dev/null || true
+  fi
+
+  # Symlink project dir into roundtable home
+  echo "  SSH: Linking ${ROOT} → ${SSH_HOME}/cli-roundtable" >&2
+  ln -sf "$ROOT" "${SSH_HOME}/cli-roundtable"
+
+  # PATH entry in .bashrc
+  local bashrc="${SSH_HOME}/.bashrc"
+  if ! grep -q "cli-roundtable" "$bashrc" 2>/dev/null; then
+    echo "  SSH: Adding ${ROOT} to roundtable user PATH" >&2
+    echo "export PATH=\"\$PATH:${ROOT}\"" >> "$bashrc"
+  fi
+
+  # ACL permissions for read/write access
+  echo "  SSH: Setting ACL permissions on ${ROOT} for roundtable user" >&2
+  setfacl -R -m u:roundtable:rwX "$ROOT"
+  setfacl -R -d -m u:roundtable:rwX "$ROOT" 2>/dev/null || true
+
+  echo "  ✅ SSH user workspace configured. Log in as 'roundtable' and run: roundtable check" >&2
+}
+
 # ── Command implementations ──────────────────────────────────────
 
 cmd_wg() {
@@ -709,6 +742,16 @@ cmd_wg_peer_ssh_new() {
 
   ssh-keygen -t ed25519 -f "$ssh_key_path" -N "" -C "roundtable:${name}" -q 2>/dev/null
   ssh_install_key "$name" "$(cat "${ssh_key_path}.pub")"
+
+  # Prompt for workspace setup if not already configured
+  if ! ssh_access_is_setup; then
+    echo "" >&2
+    read -p "  Set up roundtable user workspace (symlink, PATH, permissions)? [y/N] " response
+    if [[ "$response" =~ ^[Yy]$ ]]; then
+      ssh_ensure_access
+    fi
+  fi
+
   echo "    SSH key generated for '${name}': ssh ${SSH_USER}@${host_ip} -i ${ssh_key_path}" >&2
 }
 
@@ -1199,6 +1242,7 @@ cmd_check() {
 
   local errors=()
   local fixes=()
+  local workspace_warning=false
 
   echo ""
   echo "  ╔═══════════════════════════════════════════╗"
@@ -1213,6 +1257,8 @@ cmd_check() {
       echo -e "[✅] ${detail}"
     elif [ "$status" = "skip" ]; then
       echo -e "[⏭] ${detail}"
+    elif [ "$status" = "warn" ]; then
+      echo -e "[⚠] ${detail}"
     else
       echo -e "[❌] ${detail}"
     fi
@@ -1372,6 +1418,22 @@ cmd_check() {
     fixes+=("sysctl -w net.ipv4.ip_forward=1")
   fi
 
+  # SSH user workspace (informational, not blocking)
+  if id "$SSH_USER" &>/dev/null; then
+    local key_count
+    key_count=$(grep -c "^# peer:" "$SSH_AUTH_KEYS" 2>/dev/null || echo 0)
+    if [[ "$key_count" -gt 0 ]]; then
+      if ssh_access_is_setup; then
+        check "SSH user workspace" ok "configured"
+      else
+        check "SSH user workspace" warn "not configured"
+        workspace_warning=true
+      fi
+    else
+      check "SSH user workspace" skip "(no SSH keys)"
+    fi
+  fi
+
   if host cloud-images.ubuntu.com &>/dev/null 2>&1; then
     check "Ubuntu image (DNS)" ok "cloud-images.ubuntu.com resolvable"
   else
@@ -1382,9 +1444,17 @@ cmd_check() {
 
   echo ""
 
-  if [ ${#errors[@]} -eq 0 ]; then
+  if [ ${#errors[@]} -eq 0 ] && ! $workspace_warning; then
     echo "  ✅ All checks passed. Host is ready."
     return 0
+  fi
+
+  if [ ${#errors[@]} -eq 0 ] && $workspace_warning; then
+    echo ""
+    echo "  ⚠ All core checks passed. SSH user workspace not configured."
+    echo "    Run: sudo ./roundtable check --fix"
+    echo ""
+    return 1
   fi
 
   if $force; then
@@ -1423,26 +1493,46 @@ cmd_check() {
       i=$((i + 1))
     done
 
+    # SSH workspace prompt (interactive, only in --fix mode)
+    if $workspace_warning; then
+      echo "" >&2
+      read -p "  Set up roundtable user workspace (symlink, PATH, permissions)? [y/N] " response
+      if [[ "$response" =~ ^[Yy]$ ]]; then
+        ssh_ensure_access
+      else
+        echo "  Skipped." >&2
+      fi
+    fi
+
     echo ""
     echo "  == Re-running checks..."
     echo ""
     cmd_check
     return $?
-  else
-    echo "  ❌ ${#errors[@]} issue(s) found. To auto-fix:"
+  fi
+
+  # SSH workspace warning (non-fix mode)
+  if $workspace_warning; then
     echo ""
-    echo "    sudo ./roundtable check --fix"
-    echo ""
-    echo "  Or fix manually:"
-    echo ""
-    local i=0
-    for fix in "${fixes[@]}"; do
-      echo "  [$((i+1))] ${fix}"
-      i=$((i + 1))
-    done
+    echo "  ⚠ Notice: SSH user workspace not configured."
+    echo "    Run: sudo ./roundtable check --fix"
     echo ""
     return 1
   fi
+
+  echo "  ❌ ${#errors[@]} issue(s) found. To auto-fix:"
+  echo ""
+  echo "    sudo ./roundtable check --fix"
+  echo ""
+  echo "  Or fix manually:"
+  echo ""
+  local i=0
+  for fix in "${fixes[@]}"; do
+    echo "  [$((i+1))] ${fix}"
+    i=$((i + 1))
+  done
+  echo ""
+  return 1
 }
 
 # ── DNS diagnostics ──────────────────────────────────────────────
