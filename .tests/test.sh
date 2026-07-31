@@ -57,6 +57,7 @@ test -d .roundtable/peers && pass "0.13 Peers dir" || fail "0.13 peers"
 ! git check-ignore config.example.yml &>/dev/null && pass "0.14 Config not gitignored" || fail "0.14 gitignored"
 command -v ssh-keygen &>/dev/null && pass "0.15 ssh-keygen" || fail "0.15 ssh-keygen"
 command -v ssh &>/dev/null && pass "0.16 ssh client" || fail "0.16 ssh"
+./roundtable wg peer list &>/dev/null && pass "0.17 wg peer list" || fail "0.17 wg peer list"
 
 # ── Phase 1: wg state ──
 echo ""
@@ -85,7 +86,7 @@ test -f .roundtable/peers/c-test.foreign.conf && pass "2A.3 Foreign config" || f
 wg show wg0 | grep -qF "$(yq '.public_key' .roundtable/peers/c-test.foreign.yml)" && pass "2A.6 In wg0" || fail "2A.6 wg0"
 out=$(sudo ./roundtable wg peer config c-test 2>&1)
 echo "$out" | grep -q "Address" && pass "2A.7 Config retrievable" || fail "2A.7 config: $out"
-sudo ./roundtable wg peers 2>&1 | grep c-test | grep -q foreign && pass "2A.8 wg peers foreign" || fail "2A.8 peers"
+sudo ./roundtable wg peer list 2>&1 | grep c-test | grep -q foreign && pass "2A.8 wg peer list foreign" || fail "2A.8 peer list"
 out=$(sudo ./roundtable wg peer new c-test 2>&1 || true)
 echo "$out" | grep -q "already exists" && pass "2A.9 Duplicate detection" || fail "2A.9 dup: $(echo "$out" | head -1)"
 # Route persistence check
@@ -195,7 +196,7 @@ grep -q "PostUp" .roundtable/peers/a-test.agent.conf && pass "2B.6 PostUp fix" |
 grep -q "AllowedIPs = 10.0.0.0/8" .roundtable/peers/a-test.agent.conf && pass "2B.7 AllowedIPs" || fail "2B.7 AllowedIPs"
 out=$(sudo ./roundtable wg peer config --type agent a-test 2>&1)
 echo "$out" | grep -q "Address" && pass "2B.8 Agent config retrieve" || fail "2B.8 config: $out"
-sudo ./roundtable wg peers 2>&1 | grep a-test | grep -q agent && pass "2B.9 wg peers agent" || fail "2B.9 peers"
+sudo ./roundtable wg peer list 2>&1 | grep a-test | grep -q agent && pass "2B.9 wg peer list agent" || fail "2B.9 peer list"
 # Agent route persistence
 agent_ip=$(yq '.ip' .roundtable/peers/a-test.agent.yml)
 ip route show dev wg0 | grep -q "$agent_ip" && pass "2B.10 Agent route: $agent_ip" || fail "2B.10 agent route"
@@ -203,7 +204,7 @@ grep -q "# peer:a-test:agent" /etc/wireguard/wg0.conf && pass "2B.11 Agent confi
 out=$(sudo ./roundtable wg peer new --type agent b-test 2>&1)
 echo "$out" | grep -q "agent" && pass "2B.12 Second agent" || fail "2B.12: $out"
 [[ "$(yq '.ip' .roundtable/peers/b-test.agent.yml)" =~ ^10\.0\.1\. ]] && pass "2B.13 Second subnet" || fail "2B.13 subnet"
-count=$(sudo ./roundtable wg peers 2>&1 | grep -c "agent" || true)
+count=$(sudo ./roundtable wg peer list 2>&1 | grep -c "agent" || true)
 [[ "$count" -ge 2 ]] && pass "2B.14 Both agents visible ($count)" || fail "2B.14 count=$count"
 # Clean up agents
 out=$(sudo ./roundtable wg peer rm --type agent a-test 2>&1)
@@ -247,7 +248,7 @@ out=$(sudo ./roundtable wg join loopback /tmp/host-a.yml 2>&1)
 echo "$out" | grep -qE "(Joined|already connected)" && pass "3.9 Join self-invite" || fail "3.9 join: $out"
 test -f .roundtable/peers/loopback.host.yml && pass "3.10 Host record created" || fail "3.10 host record"
 [[ "$(yq '.type' .roundtable/peers/loopback.host.yml)" == "host" ]] && pass "3.11 Host type=host" || fail "3.11 host type"
-sudo ./roundtable wg peers 2>&1 | grep loopback | grep -q host && pass "3.12 wg peers host" || fail "3.12 host peers"
+sudo ./roundtable wg peer list 2>&1 | grep loopback | grep -q host && pass "3.12 wg peer list host" || fail "3.12 host peer list"
 # Cluster route persistence: agents subnet should be routed via wg0
 agents_sub=$(yq '.subnets.agents' .roundtable/peers/loopback.host.yml)
 ip route show dev wg0 | grep -q "$agents_sub" && pass "3.13 Cluster subnet route: $agents_sub" || fail "3.13 cluster subnet route"
@@ -362,6 +363,90 @@ out=$(sudo ./roundtable wg peer rm restore-test 2>&1)
 echo "$out" | grep -qi "removed" && pass "8.10 Cleanup restore-test" || fail "8.10: $out"
 ! grep -q "peer:restore-test" /etc/wireguard/wg0.conf && pass "8.11 Config cleaned" || fail "8.11 config still present"
 ! ip route show dev wg0 | grep -q "$restore_ip" && pass "8.12 Route cleaned" || fail "8.12 route still present"
+
+# ── Phase 9: Proxy port forwarding ──
+echo ""
+echo "── Phase 9: Proxy port forwarding ──"
+
+# Test proxy list on empty state
+out=$(./roundtable proxy list 2>&1)
+echo "$out" | grep -qi "No proxy" && pass "9.1 proxy list empty" || fail "9.1 proxy list: $out"
+
+# Test proxy enable without args (should show usage)
+out=$(./roundtable proxy enable 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "9.2 proxy enable without args" || fail "9.2: $out"
+
+# Test proxy disable without args (should show usage)
+out=$(./roundtable proxy disable 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "9.3 proxy disable without args" || fail "9.3: $out"
+
+# Test proxy enable with non-existent agent
+out=$(sudo ./roundtable proxy enable 9999 nonexistent 2>&1 || true)
+echo "$out" | grep -qi "not found" && pass "9.4 proxy enable nonexistent agent" || fail "9.4: $out"
+
+# Test with numeric validation
+out=$(sudo ./roundtable proxy enable abc agent 2>&1 || true)
+echo "$out" | grep -qi "numeric" && pass "9.5 proxy enable non-numeric port" || fail "9.5: $out"
+
+# Test with same-port shorthand
+out=$(sudo ./roundtable proxy enable 8080:8080 agent 2>&1 || true)
+echo "$out" | grep -qi "not found" && pass "9.6 proxy enable port:port syntax" || fail "9.6: $out"
+
+# ── If an agent container exists, run real proxy tests ──
+if lxc list -c n 2>/dev/null | grep -q roundtable-; then
+  # Pick the first agent container
+  test_agent=$(lxc list -c n 2>/dev/null | grep roundtable- | head -1 | awk '{print $2}')
+  test_port=19090
+
+  # Enable a proxy
+  out=$(sudo ./roundtable proxy enable "${test_port}" "${test_agent#roundtable-}" 2>&1)
+  echo "$out" | grep -qi "Proxy" && pass "9.7 Proxy enable on ${test_agent}" || fail "9.7: $out"
+
+  # Verify LXD device exists
+  lxc config device show "$test_agent" "proxy-${test_port}" &>/dev/null && pass "9.8 LXD proxy device created" || fail "9.8 device"
+
+  # Verify YAML record exists
+  test -f ".roundtable/proxies/${test_agent#roundtable-}-${test_port}.yml" && pass "9.9 Proxy YAML record saved" || fail "9.9 record"
+
+  # Verify YAML content
+  [[ "$(yq '.host_port' ".roundtable/proxies/${test_agent#roundtable-}-${test_port}.yml")" == "${test_port}" ]] && pass "9.10 YAML host_port" || fail "9.10 host_port"
+  [[ "$(yq '.bind' ".roundtable/proxies/${test_agent#roundtable-}-${test_port}.yml")" == "127.0.0.1" ]] && pass "9.11 YAML bind=127.0.0.1" || fail "9.11 bind"
+
+  # Proxy enable idempotent
+  out=$(sudo ./roundtable proxy enable "${test_port}" "${test_agent#roundtable-}" 2>&1)
+  echo "$out" | grep -qi "already exists" && pass "9.12 Proxy enable idempotent" || fail "9.12: $out"
+
+  # Enable with --public
+  out=$(sudo ./roundtable proxy enable --public "${test_port}" "${test_agent#roundtable-}" 2>&1)
+  echo "$out" | grep -qi "already exists" && pass "9.13 Proxy enable --public on same port" || fail "9.13: $out"
+
+  # Enable a second proxy with different port
+  out=$(sudo ./roundtable proxy enable "$((test_port + 1))" "${test_agent#roundtable-}" 2>&1)
+  echo "$out" | grep -qi "Proxy" && pass "9.14 Second proxy on different port" || fail "9.14: $out"
+
+  # Proxy list shows entries
+  out=$(./roundtable proxy list 2>&1)
+  echo "$out" | grep -qi "AGENT" && pass "9.15 proxy list header" || fail "9.15 header"
+  echo "$out" | grep -qi "active" && pass "9.16 proxy list shows active status" || fail "9.16 active"
+
+  # Disable one proxy
+  out=$(sudo ./roundtable proxy disable "${test_port}" "${test_agent#roundtable-}" 2>&1)
+  echo "$out" | grep -qi "removed" && pass "9.17 Proxy disable" || fail "9.17: $out"
+
+  # Verify device removed
+  ! lxc config device show "$test_agent" "proxy-${test_port}" &>/dev/null && pass "9.18 LXD device removed" || fail "9.18 device still present"
+
+  # Verify YAML record removed
+  test ! -f ".roundtable/proxies/${test_agent#roundtable-}-${test_port}.yml" && pass "9.19 YAML record removed" || fail "9.19 record still present"
+
+  # Verify second proxy still exists
+  lxc config device show "$test_agent" "proxy-$((test_port + 1))" &>/dev/null && pass "9.20 Second proxy unaffected" || fail "9.20 second proxy gone"
+
+  # Cleanup
+  sudo ./roundtable proxy disable "$((test_port + 1))" "${test_agent#roundtable-}" 2>&1 > /dev/null
+else
+  skip "9.7-9.20 No agent container — skip real proxy tests"
+fi
 
 # ── Summary ──
 echo ""
