@@ -1467,6 +1467,15 @@ cmd_check() {
   local workspace_warning=false
   local proxy_warning=false
 
+  # Transparently escalate privileged commands when running as non-root
+  # (roundtable user has passwordless sudo via NOPASSWD:ALL)
+  if [[ $EUID -ne 0 ]]; then
+    lxc()    { command sudo lxc "$@"; }
+    iptables() { command sudo iptables "$@"; }
+    swapon() { command sudo swapon "$@"; }
+    wg()     { command sudo wg "$@"; }
+  fi
+
   echo ""
   echo "  ╔═══════════════════════════════════════════╗"
   echo "  ║   roundtable — Host Readiness Check       ║"
