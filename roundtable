@@ -50,6 +50,20 @@ VOLUMES_DIR="${ROUNDTABLE_DIR}/volumes"
 PROXIES_DIR="${ROUNDTABLE_DIR}/proxies"
 CLUSTER_SUBNETS_FILE="${ROUNDTABLE_DIR}/cluster-subnets"
 
+# ── Privilege escalation ──────────────────────────────────────────
+# These commands always need root (or LXD socket access). When running
+# as non-root we transparently wrap them with sudo. This lets the
+# roundtable user (who has passwordless sudo) run commands without
+# needing to prefix everything with 'sudo'.
+# Note: wg-quick cannot be overridden as a function (hyphen in name),
+# so it gets explicit sudo at each call site.
+if [[ $EUID -ne 0 ]]; then
+  lxc()       { command sudo lxc "$@"; }
+  wg()        { command sudo wg "$@"; }
+  iptables()  { command sudo iptables "$@"; }
+  systemctl() { command sudo systemctl "$@"; }
+fi
+
 # ── Config helpers ───────────────────────────────────────────────
 
 yq_required() {
@@ -300,7 +314,7 @@ ssh_ensure_access() {
   # Install ACL package if needed
   if ! command -v setfacl &>/dev/null; then
     echo "  SSH: Installing acl package..." >&2
-    apt-get install -y acl -qq 2>/dev/null || true
+    sudo apt-get install -y acl -qq 2>/dev/null || true
   fi
 
   # Symlink project dir into roundtable home
@@ -316,13 +330,13 @@ ssh_ensure_access() {
 
   # ACL permissions for read/write access
   echo "  SSH: Setting ACL permissions on ${ROOT} for roundtable user" >&2
-  setfacl -R -m u:roundtable:rwX "$ROOT"
-  setfacl -R -d -m u:roundtable:rwX "$ROOT" 2>/dev/null || true
+  sudo setfacl -R -m u:roundtable:rwX "$ROOT"
+  sudo setfacl -R -d -m u:roundtable:rwX "$ROOT" 2>/dev/null || true
 
   # Allow traverse into /root so the roundtable user can follow the symlink
   if ! getfacl /root 2>/dev/null | grep -q "user:roundtable:r-x"; then
     echo "  SSH: Granting traverse on /root for roundtable user" >&2
-    setfacl -m u:roundtable:rx /root
+    sudo setfacl -m u:roundtable:rx /root
   fi
 
   echo "  ✅ SSH user workspace configured. Log in as 'roundtable' and run: roundtable check" >&2
@@ -356,8 +370,8 @@ cmd_wg_init() {
   if ip link show "$WG_INTERFACE" &>/dev/null; then
     if $force; then
       echo "==> Tearing down existing ${WG_INTERFACE} (--force)..." >&2
-      wg-quick down "$WG_INTERFACE" 2>/dev/null || true
-      systemctl disable "wg-quick@${WG_INTERFACE}" 2>/dev/null || true
+      sudo wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+      sudo systemctl disable "wg-quick@${WG_INTERFACE}" 2>/dev/null || true
     else
       echo "${WG_INTERFACE} already exists. Use --force to re-initialize." >&2
       return 0
@@ -418,7 +432,7 @@ WGCONF
   fi
 
   echo "==> Bringing up ${WG_INTERFACE}..." >&2
-  wg-quick up "$WG_INTERFACE" || { echo "Failed to bring up ${WG_INTERFACE}." >&2; exit 1; }
+  sudo wg-quick up "$WG_INTERFACE" || { echo "Failed to bring up ${WG_INTERFACE}." >&2; exit 1; }
 
   # Enable persistent via systemd
   systemctl enable "wg-quick@${WG_INTERFACE}" 2>/dev/null || true
@@ -434,13 +448,13 @@ WGCONF
 cmd_wg_up() {
   load_config
   wg_ensure_installed
-  wg-quick up "$WG_INTERFACE" 2>/dev/null || { echo "${WG_INTERFACE} not configured. Run: roundtable wg init" >&2; exit 1; }
+  sudo wg-quick up "$WG_INTERFACE" 2>/dev/null || { echo "${WG_INTERFACE} not configured. Run: roundtable wg init" >&2; exit 1; }
   echo "${WG_INTERFACE} is up." >&2
 }
 
 cmd_wg_down() {
   load_config
-  wg-quick down "$WG_INTERFACE" 2>/dev/null || true
+  sudo wg-quick down "$WG_INTERFACE" 2>/dev/null || true
   echo "${WG_INTERFACE} is down." >&2
 }
 
