@@ -340,7 +340,6 @@ cmd_wg() {
     invite) cmd_wg_invite ;;
     join)   cmd_wg_join "$@" ;;
     leave)  cmd_wg_leave "$@" ;;
-    peers)  cmd_wg_peer_list ;;
     restore) cmd_wg_restore ;;
     *)      usage ;;
   esac
