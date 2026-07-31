@@ -8,6 +8,7 @@ usage() {
   printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
   printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
   printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign: optional SSH."
+  printf "  %-42s %s\n" "wg peer list" "List all peers (agents + foreign + hosts)"
   printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
   printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
   printf "  %-42s %s\n" "wg peer ssh new [--type foreign] <name>" "Generate SSH key for foreign peer"
@@ -16,7 +17,6 @@ usage() {
   printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
   printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
   printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
-  printf "  %-42s %s\n" "wg peers" "List all peers (agents + clusters)"
   printf "  %-42s %s\n" "wg restore" "Sync config + routes from saved records (post-upgrade)"
   echo ""
   echo "Agents:"
@@ -340,7 +340,7 @@ cmd_wg() {
     invite) cmd_wg_invite ;;
     join)   cmd_wg_join "$@" ;;
     leave)  cmd_wg_leave "$@" ;;
-    peers)  cmd_wg_peers ;;
+    peers)  cmd_wg_peer_list ;;
     restore) cmd_wg_restore ;;
     *)      usage ;;
   esac
@@ -449,6 +449,7 @@ cmd_wg_peer() {
   local action="${1:-}"; shift 2>/dev/null || true
   case "$action" in
     new)    cmd_wg_peer_new "$@" ;;
+    list)   cmd_wg_peer_list ;;
     config) cmd_wg_peer_config "$@" ;;
     rm)     cmd_wg_peer_rm "$@" ;;
     ssh)    cmd_wg_peer_ssh "$@" ;;
@@ -970,7 +971,7 @@ cmd_wg_leave() {
   echo "    ℹ️  '${name}' still has you as a peer until they run: roundtable wg leave ${HOSTNAME}" >&2
 }
 
-cmd_wg_peers() {
+cmd_wg_peer_list() {
   load_config
   wg_ensure_interface
 

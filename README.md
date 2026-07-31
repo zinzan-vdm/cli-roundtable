@@ -132,7 +132,7 @@ roundtable wg peer ssh config [--type foreign] <name> # Print SSH connection inf
 roundtable wg invite                  # Generate anonymous cluster invitation
 roundtable wg join <name> <invite>    # Connect to a remote mesh (host type)
 roundtable wg leave <name>            # Disconnect from a remote mesh
-roundtable wg peers                   # List all peers (agent, foreign, host)
+roundtable wg peer list                # List all peers (agent, foreign, host)
 roundtable wg restore                 # Sync config + routes from saved records (post-upgrade)
 ```
 
@@ -404,7 +404,7 @@ So after SSH'ing in, you can run commands directly:
 
 ```bash
 roundtable@host:~$ roundtable check
-roundtable@host:~$ roundtable wg peers
+roundtable@host:~$ roundtable wg peer list
 ```
 
 **Detection in `roundtable check`:** If SSH keys exist but the workspace isn't configured, `roundtable check` shows a `[⚠]` warning. Use `check --fix` to set up interactively.
@@ -417,7 +417,7 @@ scp root@<host-ip>:.roundtable/peers/laptop.foreign.ssh-key ~/.ssh/roundtable-la
 ssh roundtable@10.0.1.1 -i ~/.ssh/roundtable-laptop
 
 # You have sudo:
-roundtable@host:~$ sudo ./roundtable wg peers
+roundtable@host:~$ sudo ./roundtable wg peer list
 ```
 
 Deleting the peer (`wg peer rm`) removes the SSH key from `authorized_keys`, and `wg peer ssh rm` lets you remove it independently.

@@ -57,6 +57,7 @@ test -d .roundtable/peers && pass "0.13 Peers dir" || fail "0.13 peers"
 ! git check-ignore config.example.yml &>/dev/null && pass "0.14 Config not gitignored" || fail "0.14 gitignored"
 command -v ssh-keygen &>/dev/null && pass "0.15 ssh-keygen" || fail "0.15 ssh-keygen"
 command -v ssh &>/dev/null && pass "0.16 ssh client" || fail "0.16 ssh"
+./roundtable wg peer list &>/dev/null && pass "0.17 wg peer list" || fail "0.17 wg peer list"
 
 # ── Phase 1: wg state ──
 echo ""
@@ -85,7 +86,7 @@ test -f .roundtable/peers/c-test.foreign.conf && pass "2A.3 Foreign config" || f
 wg show wg0 | grep -qF "$(yq '.public_key' .roundtable/peers/c-test.foreign.yml)" && pass "2A.6 In wg0" || fail "2A.6 wg0"
 out=$(sudo ./roundtable wg peer config c-test 2>&1)
 echo "$out" | grep -q "Address" && pass "2A.7 Config retrievable" || fail "2A.7 config: $out"
-sudo ./roundtable wg peers 2>&1 | grep c-test | grep -q foreign && pass "2A.8 wg peers foreign" || fail "2A.8 peers"
+sudo ./roundtable wg peer list 2>&1 | grep c-test | grep -q foreign && pass "2A.8 wg peer list foreign" || fail "2A.8 peer list"
 out=$(sudo ./roundtable wg peer new c-test 2>&1 || true)
 echo "$out" | grep -q "already exists" && pass "2A.9 Duplicate detection" || fail "2A.9 dup: $(echo "$out" | head -1)"
 # Route persistence check
@@ -195,7 +196,7 @@ grep -q "PostUp" .roundtable/peers/a-test.agent.conf && pass "2B.6 PostUp fix" |
 grep -q "AllowedIPs = 10.0.0.0/8" .roundtable/peers/a-test.agent.conf && pass "2B.7 AllowedIPs" || fail "2B.7 AllowedIPs"
 out=$(sudo ./roundtable wg peer config --type agent a-test 2>&1)
 echo "$out" | grep -q "Address" && pass "2B.8 Agent config retrieve" || fail "2B.8 config: $out"
-sudo ./roundtable wg peers 2>&1 | grep a-test | grep -q agent && pass "2B.9 wg peers agent" || fail "2B.9 peers"
+sudo ./roundtable wg peer list 2>&1 | grep a-test | grep -q agent && pass "2B.9 wg peer list agent" || fail "2B.9 peer list"
 # Agent route persistence
 agent_ip=$(yq '.ip' .roundtable/peers/a-test.agent.yml)
 ip route show dev wg0 | grep -q "$agent_ip" && pass "2B.10 Agent route: $agent_ip" || fail "2B.10 agent route"
@@ -203,7 +204,7 @@ grep -q "# peer:a-test:agent" /etc/wireguard/wg0.conf && pass "2B.11 Agent confi
 out=$(sudo ./roundtable wg peer new --type agent b-test 2>&1)
 echo "$out" | grep -q "agent" && pass "2B.12 Second agent" || fail "2B.12: $out"
 [[ "$(yq '.ip' .roundtable/peers/b-test.agent.yml)" =~ ^10\.0\.1\. ]] && pass "2B.13 Second subnet" || fail "2B.13 subnet"
-count=$(sudo ./roundtable wg peers 2>&1 | grep -c "agent" || true)
+count=$(sudo ./roundtable wg peer list 2>&1 | grep -c "agent" || true)
 [[ "$count" -ge 2 ]] && pass "2B.14 Both agents visible ($count)" || fail "2B.14 count=$count"
 # Clean up agents
 out=$(sudo ./roundtable wg peer rm --type agent a-test 2>&1)
@@ -247,7 +248,7 @@ out=$(sudo ./roundtable wg join loopback /tmp/host-a.yml 2>&1)
 echo "$out" | grep -qE "(Joined|already connected)" && pass "3.9 Join self-invite" || fail "3.9 join: $out"
 test -f .roundtable/peers/loopback.host.yml && pass "3.10 Host record created" || fail "3.10 host record"
 [[ "$(yq '.type' .roundtable/peers/loopback.host.yml)" == "host" ]] && pass "3.11 Host type=host" || fail "3.11 host type"
-sudo ./roundtable wg peers 2>&1 | grep loopback | grep -q host && pass "3.12 wg peers host" || fail "3.12 host peers"
+sudo ./roundtable wg peer list 2>&1 | grep loopback | grep -q host && pass "3.12 wg peer list host" || fail "3.12 host peer list"
 # Cluster route persistence: agents subnet should be routed via wg0
 agents_sub=$(yq '.subnets.agents' .roundtable/peers/loopback.host.yml)
 ip route show dev wg0 | grep -q "$agents_sub" && pass "3.13 Cluster subnet route: $agents_sub" || fail "3.13 cluster subnet route"
