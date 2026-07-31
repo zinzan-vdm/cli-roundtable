@@ -1519,7 +1519,7 @@ cmd_check() {
 
   if command -v lxc &>/dev/null; then
     local storage_info
-    storage_info=$(lxc storage list 2>/dev/null | grep -v '+' | tail -n +2 | head -5)
+    storage_info=$(lxc storage list 2>/dev/null | grep -v '+' | tail -n +2 | head -5) || true
     if echo "$storage_info" | grep -qi "dir"; then
       local pool_name
       pool_name=$(echo "$storage_info" | grep -i "dir" | awk '{print $2}')
@@ -1552,7 +1552,7 @@ cmd_check() {
   fi
 
   local swap_total
-  swap_total=$(swapon --show=size --noheadings --bytes 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s}')
+  swap_total=$(swapon --show=size --noheadings --bytes 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s}') || true
   if [[ -n "$swap_total" && "$swap_total" -ge 1000000000 ]]; then
     local swap_hr
     swap_hr=$(numfmt --to=iec "$swap_total" 2>/dev/null || echo "${swap_total}B")
