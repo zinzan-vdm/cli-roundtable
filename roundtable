@@ -1711,7 +1711,7 @@ cmd_check() {
 
   echo ""
 
-  if [ ${#errors[@]} -eq 0 ] && ! $workspace_warning; then
+  if [ ${#errors[@]} -eq 0 ] && ! $workspace_warning && ! $proxy_warning; then
       echo "  ✅ All checks passed. Host is ready."
       return 0
     fi
