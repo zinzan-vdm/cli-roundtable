@@ -162,7 +162,7 @@ Agent containers are namespaced (`roundtable-<name>`) with `boot.autostart=true`
 
 ### `proxy` — Port forwarding
 
-Forward host ports into agent containers via LXD proxy devices. State is persisted as YAML records so `check --fix` can restore them.
+Forward host ports into agent containers via LXD proxy devices. This makes services running inside an agent (e.g. a web API on port 8080) accessible on the host itself — useful for development, monitoring, or exposing agent services to the LAN.
 
 ```bash
 roundtable proxy enable [--public] <port>[:<cport>] <agent>   # Forward host:<port> → agent:<cport>
@@ -170,14 +170,44 @@ roundtable proxy disable <port>[:<cport>] <agent>              # Remove a proxy 
 roundtable proxy list                                           # List all proxy forwardings
 ```
 
-By default, proxies bind to `127.0.0.1` (host-local only). Use `--public` to bind to `0.0.0.0` (accessible on the host's public IP — use with caution).
+**Port syntax** — if only one port is given, it's used for both host and container:
 
-Ports:
-- `proxy enable 8080 arthur` — forwards `127.0.0.1:8080` → `arthur:8080`
-- `proxy enable 9090:3000 arthur` — forwards `127.0.0.1:9090` → `arthur:3000`
-- `proxy enable --public 443 arthur` — forwards `0.0.0.0:443` → `arthur:443`
+| Example | Host listens on | Forwards to |
+|---------|----------------|-------------|
+| `proxy enable 8080 arthur` | `127.0.0.1:8080` | `arthur:8080` |
+| `proxy enable 9090:3000 arthur` | `127.0.0.1:9090` | `arthur:3000` |
+| `proxy enable --public 443 arthur` | `0.0.0.0:443` | `arthur:443` |
 
-The `roundtable check` command detects proxy YAML records whose LXD device is missing (e.g. after container recreation). Run `check --fix` to restore them.
+**Bind address:**
+
+- **Default (`127.0.0.1`)** — host-local only. Accessible via `curl http://localhost:<port>` on the host, or SSH'd sessions from the roundtable user.
+- **`--public` (`0.0.0.0`)** — binds on all host interfaces, including the public IP. The service becomes reachable from the internet. Use with caution (firewall accordingly).
+
+**Architecture:**
+
+Each proxy is backed by an [LXD proxy device](https://documentation.ubuntu.com/lxd/en/latest/reference/devices_proxy/) — a socket the LXD daemon creates on the host that transparently forwards TCP connections to the container. This survives agent container restarts.
+
+```
+Host (your VPS)                     Agent container (arthur)
+┌──────────────────────┐            ┌──────────────────┐
+│ 127.0.0.1:8080 ──────┼──proxy────┤ :8080 (service)  │
+│                      │            │                  │
+│ 0.0.0.0:443  ────────┼──proxy────┤ :443  (service)  │
+└──────────────────────┘            └──────────────────┘
+```
+
+**Persistence model:**
+
+State is stored in two layers:
+
+| Layer | Location | Survives |
+|-------|----------|----------|
+| LXD proxy device | LXD container config | Container restarts |
+| YAML record | `.roundtable/proxies/<agent>-<port>.yml` | Everything (disk) |
+
+If the LXD device is lost (container recreated, host rebuild), the YAML record preserves the intent. Run `sudo ./roundtable check --fix` to re-create all missing proxy devices from their records.
+
+**Security note:** LXD proxy devices bind on the host's **network namespace**, not inside the container. A proxy bound to `0.0.0.0:8080` is visible to anyone scanning the host's public IP. Prefer the default `127.0.0.1` binding unless you explicitly need public access.
 
 ### `check` — Host readiness
 
@@ -308,11 +338,12 @@ Cluster joins install routes for each remote subnet (e.g. `10.0.3.0/24`, `10.0.4
 
 ### Ports
 
-| Port | Service | Visibility |
-|------|---------|------------|
-| `51820/udp` | WireGuard tunnel | Public (configurable via `network.wg.port`) |
-| `8642` | Hermes API (per agent) | Agent loopback only |
-| `9119` | Hermes dashboard (per agent) | Agent loopback only |
+| Port | Service | Visibility | Access |
+|------|---------|------------|--------|
+| `51820/udp` | WireGuard tunnel | Public (configurable via `network.wg.port`) | — |
+| `8642` | Hermes API (per agent) | Mesh only | `10.0.1.x:8642` via WG tunnel |
+| `9119` | Hermes dashboard (per agent) | Mesh only | `10.0.1.x:9119` via WG tunnel |
+| Any | Agent services | Host-local via proxy (or public with `--public`) | `roundtable proxy enable <port> <agent>` |
 
 ### Firewall
 
@@ -330,7 +361,8 @@ Each agent gets a WireGuard config injected at creation. The agent's wg0 targets
 
 - Agents can reach each other across hosts (routed through host wg0)
 - Agents can reach admin machines on the foreign subnet
-- Hermes dashboard (`:9119`) and API (`:8642`) are accessible over the mesh
+- Hermes dashboard (`:9119`) and API (`:8642`) are accessible over the mesh at the agent's Mesh IP
+- Services inside an agent can be accessed **on the host** via `roundtable proxy enable <port> <agent>` (binds `localhost:<port>`)
 - Internet traffic goes through eth0 (LXD bridge) — unaffected by wg0
 
 ### SSH access (foreign peers)
@@ -476,6 +508,7 @@ cli-roundtable/
     foreign-ip-pool     # Foreign IP allocation tracker (from network.wg.subnets.foreign)
     peers/              # Peer records (name.agent.yml, name.foreign.yml, name.host.yml)
                         # + saved configs (name.agent.conf, name.foreign.conf)
+    proxies/            # Proxy forwarding records (agent-port.yml)
     volumes/            # Per-agent LXD persistent storage
       {name}/           # Mounted at /opt/data inside container
     cluster-subnets     # Connected remote subnets
