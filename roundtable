@@ -1277,11 +1277,7 @@ proxy_record_path() {
 
 proxy_device_exists() {
   local lxc_name="$1" device="$2"
-  if [[ $EUID -eq 0 ]]; then
-    lxc config device show "$lxc_name" "$device" &>/dev/null
-  else
-    sudo lxc config device show "$lxc_name" "$device" &>/dev/null
-  fi
+  lxc config device list "$lxc_name" 2>/dev/null | grep -qxF "$device"
 }
 
 cmd_proxy() {
@@ -1456,35 +1452,19 @@ proxy_restore_missing() {
     local lxc_name; lxc_name=$(agent_lxc_name "$agent")
     local device; device=$(proxy_lxc_device_name "$hport")
 
-    if [[ $EUID -eq 0 ]]; then
-      if ! lxc info "$lxc_name" &>/dev/null; then
-        echo "  [⏭] Proxy ${bind_ip}:${hport} → ${agent}:${cport}: agent container missing" >&2
-        continue
-      fi
-
-      if proxy_device_exists "$lxc_name" "$device"; then
-        continue
-      fi
-
-      echo "  Restoring proxy: ${bind_ip}:${hport} → ${agent}:${cport}" >&2
-      lxc config device add "$lxc_name" "$device" proxy \
-        listen="tcp:${bind_ip}:${hport}" \
-        connect="tcp:127.0.0.1:${cport}" 2>/dev/null || true
-    else
-      if ! sudo lxc info "$lxc_name" &>/dev/null; then
-        echo "  [⏭] Proxy ${bind_ip}:${hport} → ${agent}:${cport}: agent container missing" >&2
-        continue
-      fi
-
-      if proxy_device_exists "$lxc_name" "$device"; then
-        continue
-      fi
-
-      echo "  Restoring proxy: ${bind_ip}:${hport} → ${agent}:${cport}" >&2
-      sudo lxc config device add "$lxc_name" "$device" proxy \
-        listen="tcp:${bind_ip}:${hport}" \
-        connect="tcp:127.0.0.1:${cport}" 2>/dev/null || true
+    if ! lxc info "$lxc_name" &>/dev/null; then
+      echo "  [⏭] Proxy ${bind_ip}:${hport} → ${agent}:${cport}: agent container missing" >&2
+      continue
     fi
+
+    if proxy_device_exists "$lxc_name" "$device"; then
+      continue
+    fi
+
+    echo "  Restoring proxy: ${bind_ip}:${hport} → ${agent}:${cport}" >&2
+    lxc config device add "$lxc_name" "$device" proxy \
+      listen="tcp:${bind_ip}:${hport}" \
+      connect="tcp:127.0.0.1:${cport}" 2>/dev/null || true
     restored=$((restored + 1))
   done
   echo "  Restored ${restored} proxy device(s)." >&2
