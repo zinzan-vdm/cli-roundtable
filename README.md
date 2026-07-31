@@ -160,6 +160,25 @@ roundtable agent delete <name>         # Destroy container + remove peer
 
 Agent containers are namespaced (`roundtable-<name>`) with `boot.autostart=true`. The messaging gateway runs as a user systemd service with linger enabled.
 
+### `proxy` — Port forwarding
+
+Forward host ports into agent containers via LXD proxy devices. State is persisted as YAML records so `check --fix` can restore them.
+
+```bash
+roundtable proxy enable [--public] <port>[:<cport>] <agent>   # Forward host:<port> → agent:<cport>
+roundtable proxy disable <port>[:<cport>] <agent>              # Remove a proxy forwarding rule
+roundtable proxy list                                           # List all proxy forwardings
+```
+
+By default, proxies bind to `127.0.0.1` (host-local only). Use `--public` to bind to `0.0.0.0` (accessible on the host's public IP — use with caution).
+
+Ports:
+- `proxy enable 8080 arthur` — forwards `127.0.0.1:8080` → `arthur:8080`
+- `proxy enable 9090:3000 arthur` — forwards `127.0.0.1:9090` → `arthur:3000`
+- `proxy enable --public 443 arthur` — forwards `0.0.0.0:443` → `arthur:443`
+
+The `roundtable check` command detects proxy YAML records whose LXD device is missing (e.g. after container recreation). Run `check --fix` to restore them.
+
 ### `check` — Host readiness
 
 ```bash
