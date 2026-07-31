@@ -1413,7 +1413,7 @@ cmd_proxy_list() {
   fi
 
   printf "  %-20s %-20s %-15s %s\n" "AGENT" "HOST:PORT" "→ AGENT:PORT" "STATUS"
-  printf "  %-20s %-20s %-15s %s\n" "----" "--------" "-----------" "------"
+  printf "  %-20s %-20s %-15s %s\n" "--------------------" "--------------------" "---------------" "------"
 
   for record in "$PROXIES_DIR"/*.yml; do
     local agent cport hport bind_ip
@@ -1711,7 +1711,7 @@ cmd_check() {
 
   echo ""
 
-  if [ ${#errors[@]} -eq 0 ] && ! $workspace_warning; then
+  if [ ${#errors[@]} -eq 0 ] && ! $workspace_warning && ! $proxy_warning; then
       echo "  ✅ All checks passed. Host is ready."
       return 0
     fi
