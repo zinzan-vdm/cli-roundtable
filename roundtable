@@ -1251,11 +1251,33 @@ cmd_agent_delete() {
 
   echo "Removing agent '${name}' (${lxc_name})..." >&2
 
+  # Clean up proxy YAML records for this agent
+  if [[ -d "$PROXIES_DIR" ]]; then
+    for record in "$PROXIES_DIR"/*.yml; do
+      [[ -f "$record" ]] || continue
+      local record_agent
+      record_agent=$(yq '.agent // ""' "$record") || true
+      [[ "$record_agent" == "$name" ]] || continue
+      rm -f "$record"
+      echo "  Proxy record cleaned: $(basename "$record")" >&2
+    done
+  fi
+
   echo "  Releasing WireGuard peer..." >&2
   cmd_wg_peer_rm --type agent "$name" 2>/dev/null || true
 
-  lxc stop "$lxc_name" 2>/dev/null || true
-  lxc delete "$lxc_name" 2>/dev/null || true
+  echo "  Removing LXD container..." >&2
+  if lxc info "$lxc_name" &>/dev/null; then
+    lxc delete --force "$lxc_name" 2>/dev/null || true
+    if lxc info "$lxc_name" &>/dev/null 2>&1; then
+      echo "  ⚠️  Container may not have been removed." >&2
+    else
+      echo "  Container removed." >&2
+    fi
+  else
+    echo "  Container not found (already removed)." >&2
+  fi
+
   rm -rf "${VOLUMES_DIR}/${name}"
 
   echo "Agent '${name}' deleted." >&2
