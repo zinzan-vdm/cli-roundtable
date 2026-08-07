@@ -1,7 +1,5 @@
 # cli-roundtable
 
-A CLI tool to manage a cluster of Hermes agents. The agents run as LXD containers. A WireGuard mesh connects the agents, the host, and your laptop.
-
 ---
 
 ## What is cli-roundtable
@@ -29,33 +27,15 @@ WireGuard runs natively on the host. It does not use Docker or wg-easy. The host
 
 ## Prerequisites
 
-| Requirement | Minimum | How to install |
-|-------------|---------|----------------|
-| LXD | 5.x | `snap install lxd && lxd init --auto --storage-backend dir` |
-| wireguard-tools | any | `apt install -y wireguard-tools` |
-| yq (mikefarah) | v4.44.6 | See the command below |
-| Python 3 | 3.x | `apt install -y python3` |
-| Swap | 1 GB | See the command below |
-| iptables rule | any | See the command below |
-| Free disk | 5 GB | Not applicable |
+- LXD 5.x or later
+- wireguard-tools
+- yq (mikefarah/yq) v4.44.6 or later
+- Python 3
+- 1 GB swap
+- 5 GB free disk
+- iptables rule to allow LXD bridge traffic through Docker
 
-```bash
-# Install yq
-curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64 -o /usr/local/bin/yq
-chmod +x /usr/local/bin/yq
-
-# Create swap
-fallocate -l 1G /swapfile
-chmod 600 /swapfile
-mkswap /swapfile
-swapon /swapfile
-
-# Allow LXD container traffic through Docker
-iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT
-iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT
-```
-
-The project runs on Ubuntu 26.04. It was tested on a Hetzner CX22 with 4 GB RAM and 2 vCPU.
+Run `sudo ./roundtable check --fix` to install all the prerequisites. The tool checks every requirement and installs anything that is missing.
 
 ## Quick Start
 
