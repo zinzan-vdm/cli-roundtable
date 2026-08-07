@@ -1,515 +1,318 @@
 # cli-roundtable
 
-**LXD-based Hermes Agent cluster manager.** Spin up isolated Hermes agents as LXD system containers behind a WireGuard mesh, orchestrated from a single CLI.
+A CLI tool to manage a cluster of Hermes agents. The agents run as LXD containers. A WireGuard mesh connects the agents, the host, and your laptop.
 
 ---
+
+## What is cli-roundtable
+
+`roundtable` is a command-line tool. It builds, starts, and deletes LXD containers. Each container runs one Hermes agent. The tool creates the WireGuard mesh on the host. It also manages the VPN peers and the network.
 
 ## How it works
 
-Each agent is a **full Ubuntu 24.04 LXD system container** cloned from a `roundtable-agent` golden image with Hermes Agent pre-installed.
+The tool keeps all state on the host. It stores the state in a `.roundtable` directory. The directory holds the IP pools, the peer records, and the proxy records.
 
-WireGuard (wg0) runs **natively on the host** — no Docker, no wg-easy. Agents route cluster traffic through the host, and the host's wg0 manages all peer connections (local agents + remote cluster hosts).
+Each agent runs in one LXD container. The container is a copy of a golden image. The golden image has Hermes Agent pre-installed. The container gets a WireGuard config at creation. The config points to the host.
 
-```
-                                     +-----------------------------------------------------------------------+
-                                     | Server/Host                                                           |
-                                     |                                            +---------------------+    |
-                                     |                            +---------------|  agent-00           |    |
-                                     |                            |  VPN Peer     +---------------------+    |
-                                     |                            |  10.10.1.2    LXD Container              |
-                                     |                            |               eth → lxbr0 (internet)     |
-                                     |                            |               wg0 → 10.10.1.2 (VPN)      |
-                                     |                            |                                          |
-                                     |                            |                                          |
-+--------------------+               |    +--------------------+  |               +---------------------+    |
-|  Admin             |---------------+----|  VPN               |--+---------------|  agent-01           |    |
-+--------------------+  VPN Peer     |    +--------------------+  |  VPN Peer     +---------------------+    |
-Your local machine      10.10.1.1    |    Wireguard VPN Server    |  10.10.1.3    LXD Container              |
-                                     |    Runs on host            |               eth → lxbr0 (internet)     |
-                                     |    Mesh (10.10.1.0/24)     |               wg0 → 10.10.1.3 (VPN)      |
-                                     |    Mesh IP 10.10.1.0       |                                          |
-                                     |                            |                                          |
-                                     |                            |               +---------------------+    |
-                                     |                            +---------------|  agent-XX           |    |
-                                     |                               VPN Peer     +---------------------+    |
-                                     |                               10.10.1.x    eth → lxbr0 (internet)     |
-                                     |                                            wg0 → 10.10.1.4 (VPN)      |
-                                     |                                                                       |
-                                     +-----------------------------------------------------------------------+
+WireGuard runs natively on the host. It does not use Docker or wg-easy. The host routes all cluster traffic.
 
-```
+## Key design decisions
 
-**Key design decisions:**
-- **Agents are orchestrators, not runners.** LLM inference on OpenRouter's GPUs — agents orchestrate tool calls and relay API calls.
-- **Cluster topology lives on host wg0 only.** Agents are topology-agnostic — their wg0 targets just the host with `AllowedIPs = 10.0.0.0/8`. No agent config changes when hosts join/leave the cluster.
-- **Routes are persisted for reboot resilience.** Peers are stored as `[Peer]` sections in `/etc/wireguard/wg0.conf`. On system reboot, `wg-quick@wg0` re-reads the config and restores both the peer entries and their kernel routes.
-- **Config file transport for clustering.** Invite files are YAML configs exchanged out-of-band. No SSH dependency.
-- **Golden image pattern.** Build once (~1.4 GB, ~3-4 min), clone many (~30s each).
-- **Dir storage.** LXD uses `dir` backend — simple, no kernel module dependencies.
-
----
+- Use LXD containers, not Docker.
+- Use native WireGuard, not wg-easy.
+- Keep all state on the host.
+- Store peer routes in the WireGuard config file.
+- Store IP allocations in text pools.
+- Build one golden image, then clone it.
+- Use the `dir` storage backend.
+- Make agents routing-agnostic.
 
 ## Prerequisites
 
-| Requirement | Min. version | Install |
-|-------------|-------------|---------|
-| **LXD** | 5.x+ | `snap install lxd && lxd init --auto --storage-backend dir` |
-| **wireguard-tools** | — | `apt install -y wireguard-tools` |
-| **yq** (mikefarah/yq) | v4.44.6 | `curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64 -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq` |
-| **Python 3** | 3.x | `apt install -y python3` |
-| **Swap** | ≥1 GB | `fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile` |
-| **iptables rule** | — | `iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT && iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT` |
-| **DNS** | — | `cloud-images.ubuntu.com` must be resolvable |
-| **Free disk** | ≥5 GB | — |
-
-> Tested on Ubuntu 26.04 / Linux 7.0.0-15 / Hetzner CX22 (4 GB RAM, 2 vCPU, ~21 GB free). LXD 6.8, yq v4.44.6.
-
-**Why the iptables rule?** LXD containers connect via bridge `lxdbr0`. Docker's `DOCKER-USER` chain defaults to `FORWARD DROP`, which blocks LXD container outbound traffic. Adding `lxdbr0` ACCEPT rules restores connectivity.
-
-**Quick check:** `sudo ./roundtable check` runs all checks. Add `--fix` to auto-install.
-
----
-
-## Quick start
+| Requirement | Minimum | How to install |
+|-------------|---------|----------------|
+| LXD | 5.x | `snap install lxd && lxd init --auto --storage-backend dir` |
+| wireguard-tools | any | `apt install -y wireguard-tools` |
+| yq (mikefarah) | v4.44.6 | See the command below |
+| Python 3 | 3.x | `apt install -y python3` |
+| Swap | 1 GB | See the command below |
+| iptables rule | any | See the command below |
+| Free disk | 5 GB | Not applicable |
 
 ```bash
-# 1. Configure
-cp config.example.yml config.yml
-# Edit config.yml → set network.host to your VPS IP/domain
+# Install yq
+curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64 -o /usr/local/bin/yq
+chmod +x /usr/local/bin/yq
 
-# 2. Check host readiness (auto-fixes with --fix)
-sudo ./roundtable check --fix
+# Create swap
+fallocate -l 1G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
 
-# 3. Initialize host WireGuard mesh
-sudo ./roundtable wg init
-
-# 4. Build the golden image (one-time, ~3-4 min)
-sudo ./roundtable golden-image build v2026.5.29.2
-
-# 5. Create and start agents
-sudo ./roundtable agent create arthur
-sudo ./roundtable agent setup arthur
-sudo ./roundtable agent gateway up arthur
-
-# 6. Generate a WireGuard config for your laptop (optional)
-./roundtable wg peer new laptop    # creates a foreign peer (default), prints WG config
-# Save the output to a file and import it in your laptop's WireGuard app
-# The SSH access command is printed alongside — use it to manage the cluster
-#   SSH: ssh roundtable@10.0.1.1 -i .roundtable/peers/laptop.foreign.ssh-key
+# Allow LXD container traffic through Docker
+iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT
+iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT
 ```
 
-### What happens during setup
+The project runs on Ubuntu 26.04. It was tested on a Hetzner CX22 with 4 GB RAM and 2 vCPU.
 
-|| Step | What runs | Time |
-||------|-----------|------|
-|| `wg init` | Creates wg0, generates keys, enables systemd, inits state dir | ~3s |
-|| `golden-image build vX` | Launches LXD temp container, installs Hermes + yq, publishes image | ~3–4 min |
-|| `agent create arthur` | Clones golden image, creates WG peer, injects wg0.conf, enables tunnel | ~1 min |
-|| `agent setup arthur` | Runs `hermes setup --run-as-user root` inside container | ~30s |
-|| `agent gateway up arthur` | Installs & starts messaging gateway | ~10s |
+## Quick Start
 
-**Reboot resilience:** WireGuard peers and their routes are persisted in `/etc/wireguard/wg0.conf`. A host reboot automatically restores all peer connections via `wg-quick@wg0` — no manual recovery needed.
+### Basic setup
 
----
+Follow these steps to get one agent running.
 
-## CLI reference
+1. Copy the config template.
+   ```bash
+   cp config.example.yml config.yml
+   ```
+2. Edit `config.yml`. Set `network.host` to your VPS IP or domain.
+3. Check the host. This installs anything that is missing.
+   ```bash
+   sudo ./roundtable check --fix
+   ```
+4. Initialize the WireGuard mesh.
+   ```bash
+   sudo ./roundtable wg init
+   ```
+5. Build the golden image. This takes 3 to 4 minutes.
+   ```bash
+   sudo ./roundtable golden-image build v2026.5.29.2
+   ```
+6. Create an agent.
+   ```bash
+   sudo ./roundtable agent create arthur
+   ```
+7. Set up the agent.
+   ```bash
+   sudo ./roundtable agent setup arthur
+   ```
+8. Start the messaging gateway.
+   ```bash
+   sudo ./roundtable agent gateway up arthur
+   ```
 
-### `wg` — WireGuard networking
+### Advanced setup
+
+Use these commands to work with the network and the agents.
+
+**Create a laptop peer.** This creates a WireGuard config for your laptop. It also offers SSH access if you answer `y`.
 
 ```bash
-roundtable wg init [--force]          # Initialize host wg0 mesh (idempotent)
-roundtable wg up|down                 # Bring wg0 up/down
-roundtable wg peer new <name>         # Create foreign WireGuard peer (laptop/admin, default)
-                                     #   Prompts for optional SSH key generation
-roundtable wg peer new --type agent <name>  # Create agent WireGuard peer (no SSH)
-roundtable wg peer config <name>      # Print foreign peer config (default type: foreign)
-roundtable wg peer config --type agent <name>  # Print agent peer config
-roundtable wg peer rm <name>          # Remove foreign peer (also removes SSH key)
-roundtable wg peer rm --type agent <name>  # Remove agent peer
-roundtable wg peer ssh new [--type foreign] <name>     # Generate SSH key for foreign peer
-roundtable wg peer ssh rm [--type foreign] <name>     # Remove SSH key for foreign peer
-roundtable wg peer ssh config [--type foreign] <name> # Print SSH connection info
-roundtable wg invite                  # Generate anonymous cluster invitation
-roundtable wg join <name> <invite>    # Connect to a remote mesh (host type)
-roundtable wg leave <name>            # Disconnect from a remote mesh
-roundtable wg peer list                # List all peers (agent, foreign, host)
-roundtable wg restore                 # Sync config + routes from saved records (post-upgrade)
+./roundtable wg peer new laptop
 ```
 
-### `golden-image` — Agent base image
+**Check the agent list.**
 
 ```bash
-roundtable golden-image build <version>    # Build golden image
-roundtable golden-image rebuild <version>  # Delete existing and rebuild
+./roundtable agent list
 ```
 
-`<version>` is a Hermes Agent release tag (e.g. `v2026.5.29.2`). Published as `roundtable-agent` LXD alias.
-
-### `agent` — Agent lifecycle
+**Open a shell in an agent.**
 
 ```bash
-roundtable agent list                  # List containers
-roundtable agent create <name>         # Clone golden image + create WG peer
-roundtable agent start|stop|restart    # Container lifecycle
-roundtable agent shell <name>          # Open root shell
-roundtable agent logs <name>           # Follow container journal
-roundtable agent setup <name>          # Run hermes setup inside container
-roundtable agent gateway up|down       # Start/stop the messaging gateway
-roundtable agent delete <name>         # Destroy container + remove peer
+./roundtable agent shell arthur
 ```
 
-Agent containers are namespaced (`roundtable-<name>`) with `boot.autostart=true`. The messaging gateway runs as a user systemd service with linger enabled.
-
-### `proxy` — Port forwarding
-
-Forward host ports into agent containers via LXD proxy devices. This makes services running inside an agent (e.g. a web API on port 8080) accessible on the host itself — useful for development, monitoring, or exposing agent services to the LAN.
+**Follow an agent log.**
 
 ```bash
-roundtable proxy enable [--public] <port>[:<cport>] <agent>   # Forward host:<port> → agent:<cport>
-roundtable proxy disable <port>[:<cport>] <agent>              # Remove a proxy forwarding rule
-roundtable proxy list                                           # List all proxy forwardings
+./roundtable agent logs arthur
 ```
 
-**Port syntax** — if only one port is given, it's used for both host and container:
-
-| Example | Host listens on | Forwards to |
-|---------|----------------|-------------|
-| `proxy enable 8080 arthur` | `127.0.0.1:8080` | `arthur:8080` |
-| `proxy enable 9090:3000 arthur` | `127.0.0.1:9090` | `arthur:3000` |
-| `proxy enable --public 443 arthur` | `0.0.0.0:443` | `arthur:443` |
-
-**Bind address:**
-
-- **Default (`127.0.0.1`)** — host-local only. Accessible via `curl http://localhost:<port>` on the host, or SSH'd sessions from the roundtable user.
-- **`--public` (`0.0.0.0`)** — binds on all host interfaces, including the public IP. The service becomes reachable from the internet. Use with caution (firewall accordingly).
-
-**Architecture:**
-
-Each proxy is backed by an [LXD proxy device](https://documentation.ubuntu.com/lxd/en/latest/reference/devices_proxy/) — a socket the LXD daemon creates on the host that transparently forwards TCP connections to the container. This survives agent container restarts.
-
-```
-Host (your VPS)                     Agent container (arthur)
-┌──────────────────────┐            ┌──────────────────┐
-│ 127.0.0.1:8080 ──────┼──proxy────┤ :8080 (service)  │
-│                      │            │                  │
-│ 0.0.0.0:443  ────────┼──proxy────┤ :443  (service)  │
-└──────────────────────┘            └──────────────────┘
-```
-
-**Persistence model:**
-
-State is stored in two layers:
-
-| Layer | Location | Survives |
-|-------|----------|----------|
-| LXD proxy device | LXD container config | Container restarts |
-| YAML record | `.roundtable/proxies/<agent>-<port>.yml` | Everything (disk) |
-
-If the LXD device is lost (container recreated, host rebuild), the YAML record preserves the intent. Run `sudo ./roundtable check --fix` to re-create all missing proxy devices from their records.
-
-**Security note:** LXD proxy devices bind on the host's **network namespace**, not inside the container. A proxy bound to `0.0.0.0:8080` is visible to anyone scanning the host's public IP. Prefer the default `127.0.0.1` binding unless you explicitly need public access.
-
-### `check` — Host readiness
+**Forward a host port into an agent.**
 
 ```bash
-roundtable check              # Check all prerequisites
-roundtable check --fix        # Auto-install missing prerequisites
+./roundtable proxy enable 8080 arthur
 ```
 
----
+**Remove an agent.** This deletes the container, the volume, the peer, and the proxy records.
+
+```bash
+sudo ./roundtable agent delete arthur
+```
+
+## Usage
+
+Run `roundtable` with a command and its arguments.
+
+```bash
+roundtable <command> [args]
+```
+
+### WireGuard commands
+
+| Command | Purpose |
+|---------|---------|
+| `wg init [--force]` | Initialize the host WireGuard mesh |
+| `wg up` | Bring the `wg0` interface up |
+| `wg down` | Bring the `wg0` interface down |
+| `wg peer new [--type agent\|foreign] <name>` | Create a WireGuard peer and print its config |
+| `wg peer list` | List all peers |
+| `wg peer config [--type agent\|foreign\|host] <name>` | Print a peer config |
+| `wg peer rm [--type agent\|foreign\|host] <name>` | Remove a peer |
+| `wg peer ssh new [--type foreign] <name>` | Generate an SSH key for a foreign peer |
+| `wg peer ssh rm [--type foreign] <name>` | Remove an SSH key |
+| `wg peer ssh config [--type foreign] <name>` | Print SSH connection info |
+| `wg invite` | Generate a cluster invitation |
+| `wg join <name> <invite-file>` | Connect to a remote mesh |
+| `wg leave <name>` | Disconnect from a remote mesh |
+| `wg restore` | Restore peers and routes from saved records |
+
+**Note on peer types.** A peer has one of three types.
+
+- `agent` is a LXD container. Its config points to the host.
+- `foreign` is a laptop or admin machine. It can get SSH access.
+- `host` is another cluster host. The tool creates it with `wg join`.
+
+The default peer type is `foreign`.
+
+### Golden image commands
+
+| Command | Purpose |
+|---------|---------|
+| `golden-image build <version>` | Build the golden image |
+| `golden-image rebuild <version>` | Delete the old image and build a new one |
+
+`<version>` is a Hermes Agent release tag, for example `v2026.5.29.2`. The tool publishes the image as the `roundtable-agent` LXD alias.
+
+### Agent commands
+
+| Command | Purpose |
+|---------|---------|
+| `agent list` | List all agent containers |
+| `agent create <name>` | Create an agent container |
+| `agent start <name>` | Start an agent container |
+| `agent stop <name>` | Stop an agent container |
+| `agent restart <name>` | Restart an agent container |
+| `agent shell <name>` | Open a root shell in the container |
+| `agent logs <name>` | Follow the container journal |
+| `agent setup <name>` | Run the Hermes setup in the container |
+| `agent gateway up <name>` | Start the messaging gateway |
+| `agent gateway down <name>` | Stop the messaging gateway |
+| `agent delete <name>` | Delete the agent and all its resources |
+
+The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
+
+### Proxy commands
+
+A proxy forwards a host port to a port inside an agent container.
+
+| Command | Purpose |
+|---------|---------|
+| `proxy enable [--public] <port>[:<cport>] <agent>` | Forward a host port to a container port |
+| `proxy disable <port>[:<cport>] <agent>` | Remove a forwarding rule |
+| `proxy list` | List all forwardings and their status |
+
+The port syntax works in two ways.
+
+- `proxy enable 8080 arthur` forwards `127.0.0.1:8080` to `arthur:8080`.
+- `proxy enable 9090:3000 arthur` forwards `127.0.0.1:9090` to `arthur:3000`.
+
+The default bind address is `127.0.0.1`. This makes the port reachable only on the host. Add `--public` to bind on all interfaces. With `--public`, the port is reachable from the internet. Use `--public` only when you need it.
+
+### Host check command
+
+| Command | Purpose |
+|---------|---------|
+| `check [--fix]` | Check the host readiness |
+
+`check` verifies the tools and the host state. It checks yq, LXD, iptables, swap, disk, Python, WireGuard, IP forwarding, DNS, and the SSH workspace. Add `--fix` to install anything that is missing.
 
 ## Configuration
 
-```yaml
-# config.yml — copy config.example.yml and edit
-network:
-  host: vps-ip-or-domain              # Your VPS IP/domain (required)
-  wg:
-    interface: wg0                     # WG interface name
-    port: 51820                        # WG listen port (public UDP)
-    subnets:
-      cluster: 10.0.0.0/8             # Agent routing scope (AllowedIPs)
-      agents: 10.0.1.0/24             # Local agent IP pool (.1 = host mesh IP)
-      foreign: 10.0.2.0/24            # Admin/laptop VPN peer range
-    opts:
-      persistent_keepalive: 25        # WG keepalive interval (seconds)
-agents:
-  limits:
-    cpu: 1
-    memory: 768MB
-golden-image:
-  base: ubuntu:24.04                  # LXD image for golden image base
-```
+The tool reads `config.yml`. Copy `config.example.yml` to `config.yml` and edit it.
 
-Each host needs unique `agents` and `foreign` subnets. Typical layout:
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `network.host` | Not set | Your VPS IP or domain |
+| `network.wg.interface` | `wg0` | WireGuard interface name |
+| `network.wg.port` | `51820` | WireGuard listen port |
+| `network.wg.subnets.cluster` | `10.0.0.0/8` | Agent routing scope |
+| `network.wg.subnets.agents` | `10.0.1.0/24` | Local agent IP pool |
+| `network.wg.subnets.foreign` | `10.0.2.0/24` | Laptop and admin IP pool |
+| `network.wg.opts.persistent_keepalive` | `25` | Keepalive interval in seconds |
+| `agents.limits.cpu` | `1` | CPU limit per agent |
+| `agents.limits.memory` | `768MB` | Memory limit per agent |
+| `golden-image.base` | `ubuntu:24.04` | Base image for the golden image |
+
+Each host must have a unique `agents` subnet and a unique `foreign` subnet.
 
 | Host | agents | foreign |
 |------|--------|---------|
 | Host A | `10.0.1.0/24` | `10.0.2.0/24` |
 | Host B | `10.0.3.0/24` | `10.0.4.0/24` |
 
----
-
 ## Clustering
 
-Connect multiple hosts' meshes together so agents on any host can reach agents on any other host.
+Clustering connects the meshes of multiple hosts. Agents on any host can then reach agents on any other host.
 
-### How it works
+Each host runs its own `wg0` interface on a unique subnet. Agents route all `10.x.x.x` traffic through their host. The hosts connect as WireGuard peers. The agents never learn about the remote hosts.
 
-Each host runs its own wg0 on a unique `/24` subnet. Agents route all `10.x.x.x` traffic through their host. Cross-host routing is handled by host-to-host WireGuard peer entries — agents never know about remote hosts.
+### Connect two hosts
 
-```
-Host A wg0 (10.0.1.1)          Host B wg0 (10.0.3.1)
-  ├── agent-01 (10.0.1.2)        ├── agent-02 (10.0.3.2)
-  ├── agent-03 (10.0.1.3)        ├── agent-04 (10.0.3.3)
-  └── PEER: Host B               └── PEER: Host A
-       AllowedIPs: 10.0.3.0/24        AllowedIPs: 10.0.1.0/24
-                   10.0.4.0/24                       10.0.2.0/24
-       endpoint: B-IP:51820            endpoint: A-IP:51820
-```
+1. Generate an invitation on Host A.
+   ```bash
+   Host A$ ./roundtable wg invite > host-a-invite.yml
+   ```
+2. Send `host-a-invite.yml` to Host B.
+3. Generate an invitation on Host B.
+   ```bash
+   Host B$ ./roundtable wg invite > host-b-invite.yml
+   ```
+4. Send `host-b-invite.yml` to Host A.
+5. Connect Host A to Host B.
+   ```bash
+   Host A$ ./roundtable wg join host-b host-b-invite.yml
+   ```
+6. Connect Host B to Host A.
+   ```bash
+   Host B$ ./roundtable wg join host-a host-a-invite.yml
+   ```
+7. Verify the connection.
+   ```bash
+   Host A$ ping 10.0.3.1
+   ```
+   ```bash
+   Host B$ ping 10.0.1.1
+   ```
 
-Agents on Host A send traffic to `10.0.3.x` → host A wg0 → encrypts → Host B → Host B's agents.
+A join is one-way until the other host joins too. A single join lets the remote host reach your agents. The connection is bidirectional only after both hosts join.
 
-### Setup
-
-```bash
-# Host A: create invitation and send to Host B
-Host A$ roundtable wg invite > host-a-invite.yml
-# (scp/email host-a-invite.yml to Host B)
-
-# Host B: create invitation and send to Host A
-Host B$ roundtable wg invite > host-b-invite.yml
-# (scp/email host-b-invite.yml to Host A)
-
-# Host A: connect to Host B's mesh
-Host A$ roundtable wg join host-b host-b-invite.yml
-
-# Host B: connect to Host A's mesh
-Host B$ roundtable wg join host-a host-a-invite.yml
-
-# Verify
-Host A$ ping 10.0.3.1   # should reach Host B's mesh IP
-Host B$ ping 10.0.1.1   # should reach Host A's mesh IP
-```
-
-**Joins are one-way until reciprocated.** A single `join` lets the remote host reach your agents, but you can't reach theirs until they also `join` with your invite.
-
-### Teardown
+### Disconnect two hosts
 
 ```bash
-Host A$ roundtable wg leave host-b    # Only affects this side
-Host B$ roundtable wg leave host-a    # Other side still has you as peer
+Host A$ ./roundtable wg leave host-b
+Host B$ ./roundtable wg leave host-a
 ```
 
-### Invite file format
+A `leave` affects only the host that runs it.
 
-```yaml
-# Generated by `roundtable wg invite`
-public_key: xTIB9q...J0Xk=
-endpoint: 203.0.113.5:51820
-agents: 10.0.1.0/24          # Subnet the remote must route
-foreign: 10.0.2.0/24         # Admin/laptop range
-cluster: 10.0.0.0/8          # Informational (not used for routing)
-```
+### Invitation format
 
----
+An invitation is a YAML file. It holds four values.
 
-## Network design
+| Field | Purpose |
+|-------|---------|
+| `public_key` | The host public key |
+| `endpoint` | The host address and port |
+| `agents` | The agents subnet |
+| `foreign` | The foreign subnet |
+| `cluster` | The cluster scope, shown for information |
 
-| Network | Default | Purpose |
-|---------|---------|---------|
-| Host wg0 | `10.0.1.0/24` | Host mesh IP (.1), agent pool (.2-.254) |
-| Foreign pool | `10.0.2.0/24` | Admin/laptop WireGuard peers |
-| Cluster scope | `10.0.0.0/8` | Agent AllowedIPs (routes everything through host) |
-| LXD bridge | `10.8.100.0/24` | Container outbound NAT |
+## Resilience
 
-### Routing
+The tool restores the network state after a host reboot.
 
-Each peer (`wg peer new`) gets a `/32` kernel route installed immediately and persisted in the config file. On host reboot, `wg-quick up` reads the persisted `[Peer]` sections and re-installs all routes. No manual recovery needed.
+The tool stores each peer as a `[Peer]` section in the WireGuard config. The config file is `/etc/wireguard/wg0.conf`. The `wg-quick@wg0` systemd service reads this file at boot. It restores the peers and the routes.
+
+The tool also keeps the state on disk in the `.roundtable` directory. The directory holds the IP pools, the peer records, and the proxy records.
+
+To restore state after a software upgrade, run `wg restore`.
 
 ```bash
-# Example: routes on a host with one agent (10.0.1.2) and one foreign peer (10.0.2.2)
-$ ip route show dev wg0
-10.0.1.2 scope link
-10.0.2.2 scope link
+sudo ./roundtable wg restore
 ```
 
-Cluster joins install routes for each remote subnet (e.g. `10.0.3.0/24`, `10.0.4.0/24`), which are also persisted for reboot recovery.
-
-### Ports
-
-| Port | Service | Visibility | Access |
-|------|---------|------------|--------|
-| `51820/udp` | WireGuard tunnel | Public (configurable via `network.wg.port`) | — |
-| `8642` | Hermes API (per agent) | Mesh only | `10.0.1.x:8642` via WG tunnel |
-| `9119` | Hermes dashboard (per agent) | Mesh only | `10.0.1.x:9119` via WG tunnel |
-| Any | Agent services | Host-local via proxy (or public with `--public`) | `roundtable proxy enable <port> <agent>` |
-
-### Firewall
-
-- Host must allow `51820/udp` (or your `network.wg.port`) inbound.
-- Docker's `DOCKER-USER` chain must accept LXD bridge traffic:
-  ```
-  iptables -I DOCKER-USER -i lxdbr0 -j ACCEPT
-  iptables -I DOCKER-USER -o lxdbr0 -j ACCEPT
-  ```
-- `net.ipv4.ip_forward=1` enabled automatically by `wg init`.
-
-### Agent connectivity
-
-Each agent gets a WireGuard config injected at creation. The agent's wg0 targets only the host (its single peer), with `AllowedIPs = 10.0.0.0/8`. This means:
-
-- Agents can reach each other across hosts (routed through host wg0)
-- Agents can reach admin machines on the foreign subnet
-- Hermes dashboard (`:9119`) and API (`:8642`) are accessible over the mesh at the agent's Mesh IP
-- Services inside an agent can be accessed **on the host** via `roundtable proxy enable <port> <agent>` (binds `localhost:<port>`)
-- Internet traffic goes through eth0 (LXD bridge) — unaffected by wg0
-
-### SSH access (foreign peers)
-
-Foreign peers (admin/laptop) can optionally get SSH access as the `roundtable` user. During `wg peer new`, you're prompted:
-
-```bash
-$ sudo ./roundtable wg peer new laptop
-    IP: 10.0.2.2 (foreign)
-    SSH access (optional):
-    Generate SSH key for admin access? [y/N] y
-```
-
-If you decline, you can add SSH later with the `wg peer ssh` subcommand:
-
-| Command | Description |
-|---------|-------------|
-| `roundtable wg peer ssh new [--type foreign] <name>` | Generate an SSH key for an existing foreign peer |
-| `roundtable wg peer ssh rm [--type foreign] <name>` | Remove the SSH key |
-| `roundtable wg peer ssh config [--type foreign] <name>` | Print connection info (host, key path) |
-
-When generating the first SSH key, you're prompted to set up the `roundtable` user's workspace:
-
-```bash
-  Set up roundtable user workspace (symlink, PATH, permissions)? [y/N] y
-  SSH: Setting up roundtable user workspace...
-  SSH: Linking /root/cli-roundtable → /home/roundtable/cli-roundtable
-  SSH: Adding /root/cli-roundtable to roundtable user PATH
-  SSH: Setting ACL permissions on /root/cli-roundtable for roundtable user
-  ✅ SSH user workspace configured. Log in as 'roundtable' and run: roundtable check
-```
-
-This creates:
-- **Symlink:** `/home/roundtable/cli-roundtable` → project root
-- **PATH:** `/home/roundtable/.bashrc` exports the project directory
-- **ACL:** `setfacl` grants the `roundtable` user read/write/execute on the project
-
-So after SSH'ing in, you can run commands directly:
-
-```bash
-roundtable@host:~$ roundtable check
-roundtable@host:~$ roundtable wg peer list
-```
-
-**Detection in `roundtable check`:** If SSH keys exist but the workspace isn't configured, `roundtable check` shows a `[⚠]` warning. Use `check --fix` to set up interactively.
-
-The `roundtable` user is password-locked with passwordless sudo — only SSH key authentication is allowed, and only from within the WireGuard mesh via an sshd `Match` block (`/etc/ssh/sshd_config.d/99-roundtable.conf`).
-
-```bash
-# On your laptop (connected via WireGuard):
-scp root@<host-ip>:.roundtable/peers/laptop.foreign.ssh-key ~/.ssh/roundtable-laptop
-ssh roundtable@10.0.1.1 -i ~/.ssh/roundtable-laptop
-
-# You have sudo:
-roundtable@host:~$ sudo ./roundtable wg peer list
-```
-
-Deleting the peer (`wg peer rm`) removes the SSH key from `authorized_keys`, and `wg peer ssh rm` lets you remove it independently.
-
----
-
-## Golden image
-
-The `roundtable-agent` golden image is built from Ubuntu 24.04 and published to the local LXD image store.
-
-| Component | Size |
-|-----------|------|
-| Ubuntu 24.04 base | ~270 MB |
-| Hermes Agent + Node.js 22 + Python 3.11 + uv | ~200 MB |
-| Playwright Chromium | ~177 MB |
-| Playwright headless shell | ~114 MB |
-| yq (mikefarah/yq) v4.44.6 | ~10 MB |
-| ffmpeg + system deps | ~200 MB |
-| wireguard-tools + ca-certificates | ~10 MB |
-| 90+ Hermes skills | ~50 MB |
-| Squashfs overhead | ~280 MB |
-| **Total** | **~1,415 MB (1.4 GB)** |
-
-**Build time:** ~3-4 minutes. **Clone time:** ~30 seconds (~1.4 GB on disk each with dir storage).
-
----
-
-## Resource planning
-
-| Task profile | RAM per agent | CPU | Notes |
-|-------------|--------------|-----|-------|
-| Idle / light | ~250 MB | Minimal | Gateway running, no tasks |
-| Browser tasks | ~500-700 MB | ~1 vCPU | Headless Chromium adds 250-500 MB |
-| Script/image tasks | ~400 MB | ~1 vCPU burst | Python/PIL, short-lived |
-
-| VPS plan | RAM | vCPU | Agents | Concurrent browser tasks |
-|----------|-----|------|--------|-------------------------|
-| **CX22** (€3.79) | 4 GB | 2 | 3 | 1-2 |
-| **CX32** (€6.99) | 8 GB | 4 | 5 | 3-4 ← sweet spot |
-| **CX42** (€12.99) | 16 GB | 8 | 5+ | Unlimited |
-
----
-
-## Version pinning
-
-| What's pinned | Where | How to upgrade |
-|--------------|-------|----------------|
-| yq | `check --fix` | Change URL in `check` function + golden image |
-| WireGuard port | `config.yml` | `network.wg.port` |
-| Ubuntu base | `config.yml` | `golden-image.base` |
-| Hermes Agent | CLI argument | `golden-image build v2026.6.1` |
-
-**Not pinned (managed by Hermes installer):** Node.js, Python, Playwright, ffmpeg.
-
----
-
-## Known issues
-
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| LXD containers have no network | Docker's DOCKER-USER chain drops forwarded packets | `check --fix` adds iptables rules |
-| Golden image OOM on 4 GB | `unsquashfs` spikes memory during publish | Create swap: `fallocate -l 1G /swapfile && mkswap && swapon` |
-| Golden image DNS timeout | systemd-resolved prefers IPv6 | `check --fix` diagnoses and applies IPv4 DNS |
-| AppArmor blocks wg-quick (Ubuntu 26.04+) | Restrictive default profile | `echo "network inet dgram," >> /etc/apparmor.d/local/wg-quick && apparmor_parser -r /etc/apparmor.d/wg-quick` |
-| **~~WireGuard peers unreachable after reboot~~** | ~~No routes persisted — only crypto peers restored~~ | **Fixed.** Peers now stored in `/etc/wireguard/wg0.conf` for automatic restoration |
-
-### Reboot resilience
-
-The host's `wg-quick@wg0` systemd service automatically reads `/etc/wireguard/wg0.conf` on boot. Since all peers are persisted as `[Peer]` sections:
-
-1. Peer crypto entries are restored via `wg setconf`
-2. Kernel routes for each peer's `AllowedIPs` are installed by `wg-quick`
-3. Agents and foreign peers reconnect as keepalives fire
-
-**No manual intervention needed after reboot.** All peer state (IP allocations in `ip-pool`/`foreign-ip-pool`, YAML records in `peers/`) is on disk and remains consistent.
-
----
-
-## File structure
-
-```
-cli-roundtable/
-  roundtable            # Main CLI (bash, ~1100 lines)
-  config.yml            # Your config (gitignored)
-  config.example.yml    # Configuration template
-  .roundtable/          # Runtime state (gitignored)
-    ip-pool             # Agent IP allocation tracker (from network.wg.subnets.agents)
-    foreign-ip-pool     # Foreign IP allocation tracker (from network.wg.subnets.foreign)
-    peers/              # Peer records (name.agent.yml, name.foreign.yml, name.host.yml)
-                        # + saved configs (name.agent.conf, name.foreign.conf)
-    proxies/            # Proxy forwarding records (agent-port.yml)
-    volumes/            # Per-agent LXD persistent storage
-      {name}/           # Mounted at /opt/data inside container
-    cluster-subnets     # Connected remote subnets
-```
+This command reads the saved records and adds any missing peers and routes. It does not touch the running `wg0` interface.
