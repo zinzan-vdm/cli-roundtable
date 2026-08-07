@@ -1247,7 +1247,6 @@ cmd_agent_gateway() {
 cmd_agent_delete() {
   local name="${1:?Usage: roundtable agent delete <name>}"
   local lxc_name; lxc_name=$(agent_lxc_name "$name")
-  load_config
 
   echo "Removing agent '${name}' (${lxc_name})..." >&2
 
@@ -1264,7 +1263,8 @@ cmd_agent_delete() {
   fi
 
   echo "  Releasing WireGuard peer..." >&2
-  cmd_wg_peer_rm --type agent "$name" 2>/dev/null || true
+  # Subshell: prevents exit inside cmd_wg_peer_rm from killing the parent
+  ( cmd_wg_peer_rm --type agent "$name" ) 2>/dev/null || true
 
   echo "  Removing LXD container..." >&2
   if lxc info "$lxc_name" &>/dev/null; then
