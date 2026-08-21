@@ -174,6 +174,10 @@ The default peer type is `foreign`.
 | `agent upgrade <name>` | Upgrade Hermes in one container |
 | `agent upgrade --all` | Upgrade Hermes in all containers |
 | `agent upgrade --version TAG <name>` | Upgrade to a specific version |
+| `agent snapshot create <name>` | Create a container snapshot |
+| `agent snapshot list <name>` | Show all snapshots for an agent |
+| `agent snapshot restore <name> <snap>` | Restore the container to a snapshot |
+| `agent snapshot delete <name> <snap>` | Delete a snapshot |
 | `agent delete <name>` | Delete the agent and all its resources |
 
 The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
@@ -181,6 +185,8 @@ The container name is `roundtable-<name>`. For example, `agent create arthur` cr
 The `agent upgrade` command updates Hermes Agent inside the container. It uses the built-in `hermes update` command. You do not need to rebuild the golden image. The container keeps all its state and data.
 
 Use `--version` to set a target version. The version is a Hermes Agent release tag or branch name. For example, `--version v2026.8.1`.
+
+The `snapshot` commands manage LXD container snapshots. A snapshot captures the full filesystem and state of the agent. The host-side peer records, proxy records, and IP allocation are not affected. Use snapshots to create a restore point before an upgrade or configuration change.
 
 ### Proxy commands
 

@@ -29,6 +29,7 @@ usage() {
   printf "  %-42s %s\n" "agent setup <name>" "Run hermes setup"
   printf "  %-42s %s\n" "agent gateway up|down <name>" "Start/stop the Hermes gateway"
   printf "  %-42s %s\n" "agent upgrade [--version TAG] [--all|<name>]" "Upgrade Hermes in one or all agents"
+  printf "  %-42s %s\n" "agent snapshot create|list|restore|delete <name> [<snap>]" "Manage container snapshots"
   printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + remove peer"
   echo ""
   echo "Proxy (port forwarding):"
@@ -1172,6 +1173,7 @@ cmd_agent() {
       lxc exec "$(agent_lxc_name "${1:?Usage: roundtable agent setup <name>}")" -- hermes setup ;;
     gateway) cmd_agent_gateway "$@" ;;
     upgrade) cmd_agent_upgrade "$@" ;;
+    snapshot) cmd_agent_snapshot "$@" ;;
     delete)  cmd_agent_delete "$@" ;;
     *)       usage ;;
   esac
@@ -1366,6 +1368,48 @@ cmd_agent_upgrade() {
     echo "Usage: roundtable agent upgrade [--version TAG] [--all|<name>...]" >&2
     exit 1
   fi
+}
+
+# ── Agent snapshots ─────────────────────────────────────────────────
+# LXD container snapshots capture the full filesystem and state of an
+# agent. The host-side peer records, proxy records, and IP allocation
+# stay unchanged. Use snapshots to roll back after a failed upgrade or
+# configuration change.
+#
+# Examples:
+#   roundtable agent snapshot create arthur
+#   roundtable agent snapshot list arthur
+#   roundtable agent snapshot restore arthur backup-2026-08-22T12:00:00Z
+#   roundtable agent snapshot delete arthur backup-2026-08-22T12:00:00Z
+
+cmd_agent_snapshot() {
+  local action="${1:-}"; shift 2>/dev/null || true
+  local name="${1:?Usage: roundtable agent snapshot create|list|restore|delete <name> [<snap>]}"
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
+
+  case "$action" in
+    create)
+      lxc snapshot "$lxc_name" --reuse
+      echo "Snapshot created for '${name}'." >&2
+      ;;
+    list)
+      lxc info "$lxc_name" 2>/dev/null | sed -n '/^Snapshots:/,/^[A-Z]/p' | head -n -1
+      ;;
+    restore)
+      local snap="${1:?Usage: roundtable agent snapshot restore <name> <snapshot>}"
+      lxc restore "$lxc_name" "$snap"
+      echo "Snapshot '${snap}' restored for '${name}'." >&2
+      ;;
+    delete)
+      local snap="${1:?Usage: roundtable agent snapshot delete <name> <snapshot>}"
+      lxc delete "$lxc_name/$snap"
+      echo "Snapshot '${snap}' deleted for '${name}'." >&2
+      ;;
+    *)
+      echo "Usage: roundtable agent snapshot create|list|restore|delete <name> [<snap>]" >&2
+      exit 1
+      ;;
+  esac
 }
 
 # ── Proxy (port forwarding) ────────────────────────────────────────
