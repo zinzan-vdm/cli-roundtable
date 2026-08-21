@@ -28,6 +28,7 @@ usage() {
   printf "  %-42s %s\n" "agent logs <name>" "Follow agent journal"
   printf "  %-42s %s\n" "agent setup <name>" "Run hermes setup"
   printf "  %-42s %s\n" "agent gateway up|down <name>" "Start/stop the Hermes gateway"
+  printf "  %-42s %s\n" "agent upgrade [--version TAG] [--all|<name>]" "Upgrade Hermes in one or all agents"
   printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + remove peer"
   echo ""
   echo "Proxy (port forwarding):"
@@ -1170,6 +1171,7 @@ cmd_agent() {
     setup)
       lxc exec "$(agent_lxc_name "${1:?Usage: roundtable agent setup <name>}")" -- hermes setup ;;
     gateway) cmd_agent_gateway "$@" ;;
+    upgrade) cmd_agent_upgrade "$@" ;;
     delete)  cmd_agent_delete "$@" ;;
     *)       usage ;;
   esac
@@ -1281,6 +1283,89 @@ cmd_agent_delete() {
   rm -rf "${VOLUMES_DIR}/${name}"
 
   echo "Agent '${name}' deleted." >&2
+}
+
+# ── Agent upgrade ──────────────────────────────────────────────────
+# Upgrade Hermes inside one or all agent containers. Uses the built-in
+# 'hermes update' command. This is the same approach that the golden
+# image builder uses: --version maps to a git branch or tag.
+#
+# Examples:
+#   roundtable agent upgrade arthur
+#   roundtable agent upgrade --all
+#   roundtable agent upgrade --version v2026.8.1 arthur
+
+upgrade_one_agent() {
+  local name="$1" version="$2" lxc_name
+  lxc_name=$(agent_lxc_name "$name")
+
+  if ! lxc info "$lxc_name" &>/dev/null; then
+    echo "  Agent '${name}' not found." >&2
+    return 1
+  fi
+
+  echo "==> Upgrading Hermes in '${name}'..." >&2
+
+  local upgrade_cmd="hermes update --yes"
+
+  if [[ -n "$version" ]]; then
+    echo "  Target version: ${version}" >&2
+    lxc exec "$lxc_name" -- hermes update --yes --branch "$version"
+  else
+    if lxc exec "$lxc_name" -- hermes update --check &>/dev/null; then
+      echo "  Already up to date." >&2
+      return 0
+    fi
+    lxc exec "$lxc_name" -- $upgrade_cmd
+  fi
+
+  echo "  Upgraded." >&2
+}
+
+cmd_agent_upgrade() {
+  local version="" upgrade_all=false names=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version)
+        version="${2:-}"
+        [[ -n "$version" ]] || { echo "Error: --version requires a tag or branch name" >&2; exit 1; }
+        shift 2
+        ;;
+      --version=*)
+        version="${1#*=}"
+        shift
+        ;;
+      --all)
+        upgrade_all=true
+        shift
+        ;;
+      -*)
+        echo "Error: unknown flag $1" >&2
+        exit 1
+        ;;
+      *)
+        names+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if $upgrade_all; then
+    local lxc_names
+    lxc_names=$(lxc list -c n -f csv "roundtable-" 2>/dev/null) || true
+    [[ -z "$lxc_names" ]] && { echo "No agents found." >&2; exit 0; }
+    for lxc_name in $lxc_names; do
+      upgrade_one_agent "${lxc_name#roundtable-}" "$version"
+    done
+  elif [[ ${#names[@]} -gt 0 ]]; then
+    for name in "${names[@]}"; do
+      upgrade_one_agent "$name" "$version"
+    done
+  else
+    echo "Usage: roundtable agent upgrade [--version TAG] [--all|<name>...]" >&2
+    exit 1
+  fi
 }
 
 # ── Proxy (port forwarding) ────────────────────────────────────────

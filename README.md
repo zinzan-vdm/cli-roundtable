@@ -171,9 +171,16 @@ The default peer type is `foreign`.
 | `agent setup <name>` | Run the Hermes setup in the container |
 | `agent gateway up <name>` | Start the messaging gateway |
 | `agent gateway down <name>` | Stop the messaging gateway |
+| `agent upgrade <name>` | Upgrade Hermes in one container |
+| `agent upgrade --all` | Upgrade Hermes in all containers |
+| `agent upgrade --version TAG <name>` | Upgrade to a specific version |
 | `agent delete <name>` | Delete the agent and all its resources |
 
 The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
+
+The `agent upgrade` command updates Hermes Agent inside the container. It uses the built-in `hermes update` command. You do not need to rebuild the golden image. The container keeps all its state and data.
+
+Use `--version` to set a target version. The version is a Hermes Agent release tag or branch name. For example, `--version v2026.8.1`.
 
 ### Proxy commands
 
