@@ -341,8 +341,8 @@ TOOL_MAP = _tool_map()
 
 # ── Auth ────────────────────────────────────────────────────────────
 
-API_KEYS_DIR = ROUNDTABLE_DIR / "api-keys"
-PERMS_DIR = ROUNDTABLE_DIR / "permissions"
+API_KEYS_DIR = ROUNDTABLE_DIR / "mcp" / "api-keys"
+PERMS_DIR = ROUNDTABLE_DIR / "mcp" / "permissions"
 
 
 def ensure_dirs():

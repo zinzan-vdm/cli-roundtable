@@ -24,8 +24,8 @@ cleanup() {
   sudo ./roundtable wg peer rm --type agent persist-test 2>/dev/null || true
   # MCP cleanup
   sudo ./roundtable mcp stop 2>/dev/null || true
-  rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/api-keys/mcp-test 2>/dev/null || true
-  rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/permissions/mcp-test.yml 2>/dev/null || true
+  rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/mcp/api-keys/mcp-test 2>/dev/null || true
+  rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/mcp/permissions/mcp-test.yml 2>/dev/null || true
   rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/mcp.yml 2>/dev/null || true
   sudo ./roundtable wg peer rm restore-test 2>/dev/null || true
   sudo ./roundtable wg peer rm ssh-test 2>/dev/null || true
@@ -721,10 +721,10 @@ out=$(sudo ./roundtable mcp install mcp-test --allow "agent list,agent resize *"
 echo "$out" | grep -qi "installed" && pass "17.2 Install MCP access for mcp-test" || fail "17.2: $(echo "$out" | head -2)"
 
 # Check permissions file exists
-[[ -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/permissions/mcp-test.yml ]] && pass "17.3 Permission file exists" || fail "17.3 permission file missing"
+[[ -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/mcp/permissions/mcp-test.yml ]] && pass "17.3 Permission file exists" || fail "17.3 permission file missing"
 
 # Check API key file exists
-[[ -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/api-keys/mcp-test ]] && pass "17.4 API key file exists" || fail "17.4 API key file missing"
+[[ -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/mcp/api-keys/mcp-test ]] && pass "17.4 API key file exists" || fail "17.4 API key file missing"
 
 # Permissions command
 out=$(./roundtable mcp permissions mcp-test 2>&1)

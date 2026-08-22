@@ -243,7 +243,7 @@ The server listens on the host WireGuard IP by default. Use `--bind` and
 `mcp install <name>` generates a bearer token and stores it on the host.
 It also writes a permission file with the patterns from `--allow`.
 The token uses the `rtk_` prefix. It has 32 random bytes in hex format.
-The host restricts the token file to owner read and write (chmod 600).
+The host restricts the token file to owner read and write. Use `chmod 600` to set the same permissions on the client side.
 
 Permission patterns use token-level glob matching. A pattern like
 `agent create *` matches `agent create foo --cpu 4` if the token count

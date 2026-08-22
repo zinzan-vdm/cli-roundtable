@@ -60,8 +60,8 @@ FOREIGN_IP_POOL="${ROUNDTABLE_DIR}/foreign-ip-pool"
 PEERS_DIR="${ROUNDTABLE_DIR}/peers"
 VOLUMES_DIR="${ROUNDTABLE_DIR}/volumes"
 PROXIES_DIR="${ROUNDTABLE_DIR}/proxies"
-API_KEYS_DIR="${ROUNDTABLE_DIR}/api-keys"
-PERMISSIONS_DIR="${ROUNDTABLE_DIR}/permissions"
+API_KEYS_DIR="${ROUNDTABLE_DIR}/mcp/api-keys"
+PERMISSIONS_DIR="${ROUNDTABLE_DIR}/mcp/permissions"
 CLUSTER_SUBNETS_FILE="${ROUNDTABLE_DIR}/cluster-subnets"
 
 # ── Privilege escalation ──────────────────────────────────────────
