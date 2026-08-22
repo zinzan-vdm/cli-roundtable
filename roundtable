@@ -41,6 +41,13 @@ usage() {
   printf "  %-42s %s\n" "proxy list" "List all proxy forwardings and their status"
   echo ""
   echo "Host:"
+  printf "  %-42s %s\n" "mcp start|stop|restart|status [--bind IP] [--port PORT]" "Manage the MCP server daemon"
+  printf "  %-42s %s\n" "mcp install <name> [--allow \"p1,p2\"]" "Grant agent MCP access + create API key"
+  printf "  %-42s %s\n" "mcp uninstall <name>" "Revoke all MCP access for an agent"
+  printf "  %-42s %s\n" "mcp grant <name> \"perm1,perm2\"" "Add permission patterns to an agent"
+  printf "  %-42s %s\n" "mcp revoke <name> \"p1,p2\"|--all" "Remove permission patterns"
+  printf "  %-42s %s\n" "mcp permissions <name>" "Show agent permissions and API key"
+  printf "  %-42s %s\n" "mcp list" "List all authorized agents and server status"
   printf "  %-42s %s\n" "check [--fix]" "Check host readiness (auto-fix with --fix)"
   exit 0
 }
@@ -53,6 +60,8 @@ FOREIGN_IP_POOL="${ROUNDTABLE_DIR}/foreign-ip-pool"
 PEERS_DIR="${ROUNDTABLE_DIR}/peers"
 VOLUMES_DIR="${ROUNDTABLE_DIR}/volumes"
 PROXIES_DIR="${ROUNDTABLE_DIR}/proxies"
+API_KEYS_DIR="${ROUNDTABLE_DIR}/api-keys"
+PERMISSIONS_DIR="${ROUNDTABLE_DIR}/permissions"
 CLUSTER_SUBNETS_FILE="${ROUNDTABLE_DIR}/cluster-subnets"
 
 # ── Privilege escalation ──────────────────────────────────────────
@@ -101,7 +110,7 @@ load_config() {
 # ── State directory helpers ──────────────────────────────────────
 
 init_state_dir() {
-  mkdir -p "$PEERS_DIR" "$VOLUMES_DIR" "$PROXIES_DIR"
+  mkdir -p "$PEERS_DIR" "$VOLUMES_DIR" "$PROXIES_DIR" "$API_KEYS_DIR" "$PERMISSIONS_DIR"
 
   if [[ ! -f "$IP_POOL" ]]; then
     local base_ip
@@ -1963,6 +1972,415 @@ proxy_restore_missing() {
   echo "  Restored ${restored} proxy device(s)." >&2
 }
 
+# ── MCP server ──────────────────────────────────────────────────────
+# MCP (Model Context Protocol) server that exposes roundtable commands
+# to Hermes agents over HTTP. Each agent authenticates with a bearer
+# token and is restricted to its granted permission patterns.
+#
+# Examples:
+#   roundtable mcp start
+#   roundtable mcp install worker-bee --allow "agent list,agent create *"
+#   roundtable mcp list
+
+MCP_SERVICE="roundtable-mcp.service"
+
+generate_api_key() {
+  if command -v openssl &>/dev/null; then
+    echo "rtk_$(openssl rand -hex 32 2>/dev/null)"
+  else
+    python3 -c "import secrets; print('rtk_' + secrets.token_hex(32))"
+  fi
+}
+
+cmd_mcp() {
+  local sub="${1:-}"; shift 2>/dev/null || true
+  case "$sub" in
+    start)       cmd_mcp_start "$@" ;;
+    stop)        cmd_mcp_stop ;;
+    restart)     cmd_mcp_restart ;;
+    status)      cmd_mcp_status ;;
+    install)     cmd_mcp_install "$@" ;;
+    uninstall)   cmd_mcp_uninstall "$@" ;;
+    grant)       cmd_mcp_grant "$@" ;;
+    revoke)      cmd_mcp_revoke "$@" ;;
+    permissions) cmd_mcp_permissions "$@" ;;
+    list)        cmd_mcp_list ;;
+    *)           echo "Usage: roundtable mcp start|stop|restart|status|install|uninstall|grant|revoke|permissions|list [args...]" >&2; exit 1 ;;
+  esac
+}
+
+cmd_mcp_start() {
+  local bind="" port=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --bind) bind="${2:-}"; shift 2 ;;
+      --bind=*) bind="${1#*=}"; shift ;;
+      --port) port="${2:-}"; shift 2 ;;
+      --port=*) port="${1#*=}"; shift ;;
+      *) echo "Error: unknown flag $1" >&2; exit 1 ;;
+    esac
+  done
+
+  load_config
+  init_state_dir
+
+  # Write mcp config
+  local mcp_conf="${ROUNDTABLE_DIR}/mcp.yml"
+  local host_ip
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+  {
+    echo "bind: ${bind:-$host_ip}"
+    echo "port: ${port:-8342}"
+    echo "roundtable: ${ROOT}/roundtable"
+  } > "$mcp_conf"
+
+  # Create systemd unit
+  local unit="/etc/systemd/system/${MCP_SERVICE}"
+  cat > "$unit" <<UNITEOF
+[Unit]
+Description=roundtable MCP server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 ${ROOT}/mcp-server.py
+WorkingDirectory=${ROOT}
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+  systemctl daemon-reload
+  systemctl enable "${MCP_SERVICE}"
+  systemctl start "${MCP_SERVICE}"
+
+  # Wait for health
+  local host_ip
+  host_ip=$(echo "$AGENTS_SUBNET" | sed 's|0/24$|1/24|' | sed 's|/24$||')
+  local target="${bind:-$host_ip}"
+  local target_port="${port:-8342}"
+  for i in 1 2 3 4 5; do
+    if curl -sf "http://${target}:${target_port}/health" &>/dev/null; then
+      echo "MCP server started on ${target}:${target_port}" >&2
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Warning: MCP server may not be ready. Check: systemctl status ${MCP_SERVICE}" >&2
+}
+
+cmd_mcp_stop() {
+  if systemctl is-active "${MCP_SERVICE}" &>/dev/null; then
+    systemctl stop "${MCP_SERVICE}"
+    echo "MCP server stopped." >&2
+  else
+    echo "MCP server is not running." >&2
+  fi
+}
+
+cmd_mcp_restart() {
+  cmd_mcp_stop
+  sleep 1
+  cmd_mcp_start "$@"
+}
+
+cmd_mcp_status() {
+  if systemctl is-active "${MCP_SERVICE}" &>/dev/null; then
+    systemctl status "${MCP_SERVICE}" --no-pager 2>&1 | head -20
+    echo ""
+    # Show config info
+    local mcp_conf="${ROUNDTABLE_DIR}/mcp.yml"
+    if [[ -f "$mcp_conf" ]]; then
+      echo "Config: ${mcp_conf}"
+      cat "$mcp_conf"
+    fi
+  else
+    echo "MCP server is not running." >&2
+    echo "  Start: roundtable mcp start [--bind IP] [--port PORT]" >&2
+  fi
+}
+
+cmd_mcp_install() {
+  local name="" allow_str=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --allow)
+        allow_str="${2:-}"
+        [[ -n "$allow_str" ]] || { echo "Error: --allow requires a comma-separated list" >&2; exit 1; }
+        shift 2
+        ;;
+      --allow=*) allow_str="${1#*=}"; shift ;;
+      -*) echo "Error: unknown flag $1" >&2; exit 1 ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable mcp install <name> [--allow \"p1,p2\"]" >&2; exit 1; }
+
+  load_config
+  init_state_dir
+
+  # Verify agent exists (peer record or container)
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
+  local record_path; record_path=$(peer_record_path "$name" "agent")
+
+  if [[ -f "$record_path" ]]; then
+    echo "  Using peer record for '${name}'." >&2
+  elif lxc info "$lxc_name" &>/dev/null; then
+    echo "  Using container for '${name}'." >&2
+  else
+    echo "Error: agent '${name}' not found. Create it first or check the name." >&2
+    exit 1
+  fi
+
+  # Check not already installed
+  if [[ -f "${API_KEYS_DIR}/${name}" ]]; then
+    echo "Error: agent '${name}' already has MCP access. Use 'mcp uninstall ${name}' first." >&2
+    exit 1
+  fi
+
+  # Generate API key
+  local api_key; api_key=$(generate_api_key)
+  echo "$api_key" > "${API_KEYS_DIR}/${name}"
+  chmod 600 "${API_KEYS_DIR}/${name}"
+
+  # Write permissions
+  local perm_file="${PERMISSIONS_DIR}/${name}.yml"
+  echo "allow:" > "$perm_file"
+  if [[ -n "$allow_str" ]]; then
+    IFS=',' read -ra patterns <<< "$allow_str"
+    for pat in "${patterns[@]}"; do
+      pat="${pat#"${pat%%[! ]*}"}"   # trim leading whitespace
+      pat="${pat%"${pat##*[! ]}"}"   # trim trailing whitespace
+      echo "  - \"${pat}\"" >> "$perm_file"
+    done
+  fi
+
+  echo "MCP access installed for '${name}'." >&2
+  echo "  API key: ${api_key}" >&2
+  echo "  File:    ${API_KEYS_DIR}/${name}" >&2
+  echo "  Permissions:" >&2
+  if [[ -n "$allow_str" ]]; then
+    echo "    ${allow_str}" >&2
+  else
+    echo "    (none — use 'mcp grant ${name} ...' to add)" >&2
+  fi
+  echo "" >&2
+  echo "Deploy this key to the agent's Hermes config:" >&2
+  echo "  mcp_servers:" >&2
+  echo "    roundtable-cluster:" >&2
+  echo "      url: http://<host-mesh-ip>:8342" >&2
+  echo "      headers:" >&2
+  echo "        Authorization: Bearer ${api_key}" >&2
+}
+
+cmd_mcp_uninstall() {
+  local name="${1:?Usage: roundtable mcp uninstall <name>}"
+  local removed=false
+
+  if [[ -f "${API_KEYS_DIR}/${name}" ]]; then
+    rm -f "${API_KEYS_DIR}/${name}"
+    echo "  API key removed." >&2
+    removed=true
+  fi
+
+  if [[ -f "${PERMISSIONS_DIR}/${name}.yml" ]]; then
+    rm -f "${PERMISSIONS_DIR}/${name}.yml"
+    echo "  Permissions removed." >&2
+    removed=true
+  fi
+
+  if [[ "$removed" == "false" ]]; then
+    echo "Error: agent '${name}' does not have MCP access." >&2
+    exit 1
+  fi
+
+  echo "MCP access uninstalled for '${name}'." >&2
+}
+
+cmd_mcp_grant() {
+  local name="" allow_str=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -*) echo "Error: unknown flag $1" >&2; exit 1 ;;
+      *) name="$1"; shift; break ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable mcp grant <name> \"perm1,perm2\"" >&2; exit 1; }
+  allow_str="${1:-}"
+  [[ -n "$allow_str" ]] || { echo "Usage: roundtable mcp grant <name> \"perm1,perm2\"" >&2; exit 1; }
+
+  local perm_file="${PERMISSIONS_DIR}/${name}.yml"
+  if [[ ! -f "$perm_file" ]]; then
+    echo "Error: agent '${name}' does not have MCP access. Install first." >&2
+    exit 1
+  fi
+
+  # Ensure it ends with an allow: header if empty
+  local has_allow
+  has_allow=$(head -1 "$perm_file" 2>/dev/null)
+  if [[ "$has_allow" != "allow:" ]]; then
+    echo "allow:" > "$perm_file"
+  fi
+
+  # Append patterns
+  IFS=',' read -ra patterns <<< "$allow_str"
+  for pat in "${patterns[@]}"; do
+    pat="${pat#"${pat%%[! ]*}"}"
+    pat="${pat%"${pat##*[! ]}"}"
+    echo "  - \"${pat}\"" >> "$perm_file"
+  done
+
+  echo "Granted permissions to '${name}': ${allow_str}" >&2
+}
+
+cmd_mcp_revoke() {
+  local name="" patterns_to_remove=() remove_all=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all) remove_all=true; shift ;;
+      -*) echo "Error: unknown flag $1" >&2; exit 1 ;;
+      *) name="$1"; shift; break ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable mcp revoke <name> \"p1,p2\"|--all" >&2; exit 1; }
+
+  local perm_file="${PERMISSIONS_DIR}/${name}.yml"
+  if [[ ! -f "$perm_file" ]]; then
+    echo "Error: agent '${name}' does not have MCP access." >&2
+    exit 1
+  fi
+
+  if [[ "$remove_all" == "true" ]]; then
+    echo "allow:" > "$perm_file"
+    echo "All permissions revoked for '${name}'." >&2
+    return 0
+  fi
+
+  local revoke_str="${1:-}"
+  [[ -n "$revoke_str" ]] || { echo "Usage: roundtable mcp revoke <name> \"p1,p2\"|--all" >&2; exit 1; }
+
+  IFS=',' read -ra patterns <<< "$revoke_str"
+  for pat in "${patterns[@]}"; do
+    pat="${pat#"${pat%%[! ]*}"}"
+    pat="${pat%"${pat##*[! ]}"}"
+    patterns_to_remove+=("$pat")
+  done
+
+  # Rebuild file without matching patterns
+  local tmp_file; tmp_file=$(mktemp)
+  echo "allow:" > "$tmp_file"
+  local removed=0
+  while IFS= read -r line; do
+    [[ "$line" == "allow:" ]] && continue
+    local stripped
+    stripped=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"')
+    local keep=true
+    for rp in "${patterns_to_remove[@]}"; do
+      if [[ "$stripped" == "$rp" ]]; then
+        keep=false
+        removed=$((removed + 1))
+        break
+      fi
+    done
+    if [[ "$keep" == "true" ]] && [[ -n "$stripped" ]]; then
+      echo "$line" >> "$tmp_file"
+    fi
+  done < "$perm_file"
+
+  mv "$tmp_file" "$perm_file"
+  echo "Removed ${removed} permission pattern(s) from '${name}'." >&2
+}
+
+cmd_mcp_permissions() {
+  local name="${1:?Usage: roundtable mcp permissions <name>}"
+
+  echo "Agent: ${name}"
+  echo ""
+
+  if [[ -f "${API_KEYS_DIR}/${name}" ]]; then
+    local key; key=$(cat "${API_KEYS_DIR}/${name}")
+    local fp; fp=$(echo "$key" | sha256sum | cut -c1-16)
+    echo "  API key:      ${key}"
+    echo "  Fingerprint:  SHA256:${fp}"
+  else
+    echo "  API key:      (none)"
+  fi
+  echo ""
+
+  local perm_file="${PERMISSIONS_DIR}/${name}.yml"
+  if [[ -f "$perm_file" ]]; then
+    echo "  Permissions:"
+    while IFS= read -r line; do
+      local stripped
+      stripped=$(echo "$line" | sed 's/^[[:space:]]*//')
+      if [[ "$stripped" == "-"* ]]; then
+        echo "    ${stripped}"
+      fi
+    done < "$perm_file"
+  else
+    echo "  Permissions:  (none)"
+  fi
+}
+
+cmd_mcp_list() {
+  load_config
+  init_state_dir
+
+  echo "Authorized agents:"
+  echo ""
+
+  local has_any=false
+  if [[ -d "$API_KEYS_DIR" ]]; then
+    for f in "$API_KEYS_DIR"/*; do
+      [[ -f "$f" ]] || continue
+      [[ "$(basename "$f")" == ".gitignore" ]] && continue
+      local agent; agent=$(basename "$f")
+      local key; key=$(cat "$f")
+      local fp; fp=$(echo "$key" | sha256sum | cut -c1-16)
+      local perms=""
+      if [[ -f "${PERMISSIONS_DIR}/${agent}.yml" ]]; then
+        perms=$(grep -c '^-' "${PERMISSIONS_DIR}/${agent}.yml" 2>/dev/null || echo "0")
+        perms="${perms} pattern(s)"
+      else
+        perms="no permission file"
+      fi
+      printf "  %-20s key: %s (SHA256:%s) — %s\n" "$agent" "$key" "$fp" "$perms"
+      has_any=true
+    done
+  fi
+
+  if [[ "$has_any" == "false" ]]; then
+    echo "  (no agents authorized — use 'mcp install <name>')"
+  fi
+
+  echo ""
+  echo "MCP server:"
+  if systemctl is-active "${MCP_SERVICE}" &>/dev/null; then
+    local mcp_conf="${ROUNDTABLE_DIR}/mcp.yml"
+    local bind="10.0.1.1"
+    local port="8342"
+    if [[ -f "$mcp_conf" ]]; then
+      bind=$(grep '^bind:' "$mcp_conf" | awk '{print $2}')
+      port=$(grep '^port:' "$mcp_conf" | awk '{print $2}')
+    fi
+    echo "  Status:   running"
+    echo "  Connect:  http://${bind}:${port}"
+    systemctl show -p MainPID,ActiveEnterTimestamp "${MCP_SERVICE}" 2>/dev/null | head -2 | sed 's/^/  /'
+  else
+    echo "  Status:   not running"
+  fi
+}
+
 # ── Host check ───────────────────────────────────────────────────
 
 cmd_check() {
@@ -2381,6 +2799,7 @@ case "$cmd" in
   golden-image) cmd_golden_image "$@" ;;
   agent)        cmd_agent "$@" ;;
   proxy)        cmd_proxy "$@" ;;
+  mcp)          cmd_mcp "$@" ;;
   check)        cmd_check "$@" ;;
   help|*)       usage ;;
 esac

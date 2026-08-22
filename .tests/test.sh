@@ -22,6 +22,11 @@ cleanup() {
   sudo ./roundtable wg peer rm c-test 2>/dev/null || true
   sudo ./roundtable wg leave loopback 2>/dev/null || true
   sudo ./roundtable wg peer rm --type agent persist-test 2>/dev/null || true
+  # MCP cleanup
+  sudo ./roundtable mcp stop 2>/dev/null || true
+  rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/api-keys/mcp-test 2>/dev/null || true
+  rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/permissions/mcp-test.yml 2>/dev/null || true
+  rm -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/mcp.yml 2>/dev/null || true
   sudo ./roundtable wg peer rm restore-test 2>/dev/null || true
   sudo ./roundtable wg peer rm ssh-test 2>/dev/null || true
   sudo ./roundtable wg peer rm ws-test 2>/dev/null || true
@@ -658,6 +663,115 @@ if lxc list -c n 2>/dev/null | grep -q roundtable-; then
 else
   skip "15.1-15.3 No agent container — skip real resize tests"
 fi
+
+# ── Phase 16: MCP arg validation + authorization ──
+echo ""
+echo "── Phase 16: MCP arg validation ──"
+
+# Without args — shows usage
+out=$(sudo ./roundtable mcp 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.1 mcp without args shows usage" || fail "16.1: $(echo "$out" | head -1)"
+
+# Bad subcommand
+out=$(sudo ./roundtable mcp bad-sub 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.2 mcp bad subcommand" || fail "16.2: $(echo "$out" | head -1)"
+
+# install without name
+out=$(sudo ./roundtable mcp install 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.3 install without name" || fail "16.3: $(echo "$out" | head -1)"
+
+# uninstall without name
+out=$(sudo ./roundtable mcp uninstall 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.4 uninstall without name" || fail "16.4: $(echo "$out" | head -1)"
+
+# install nonexistent agent
+out=$(sudo ./roundtable mcp install nonexistent 2>&1 || true)
+echo "$out" | grep -qi "not found" && pass "16.5 install nonexistent agent" || fail "16.5: $(echo "$out" | head -1)"
+
+# grant without name
+out=$(sudo ./roundtable mcp grant 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.6 grant without name" || fail "16.6: $(echo "$out" | head -1)"
+
+# grant without patterns
+out=$(sudo ./roundtable mcp grant mcp-test 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.7 grant without patterns" || fail "16.7: $(echo "$out" | head -1)"
+
+# revoke without name
+out=$(sudo ./roundtable mcp revoke 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.8 revoke without name" || fail "16.8: $(echo "$out" | head -1)"
+
+# permissions without name
+out=$(sudo ./roundtable mcp permissions 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "16.9 permissions without name" || fail "16.9: $(echo "$out" | head -1)"
+
+# start with bad flag
+out=$(sudo ./roundtable mcp start --bad-flag 2>&1 || true)
+echo "$out" | grep -qi "unknown flag" && pass "16.10 start bad flag" || fail "16.10: $(echo "$out" | head -1)"
+
+# ── Phase 17: Real MCP install + start + status + list ──
+echo ""
+echo "── Phase 17: Real MCP install + start ──"
+
+# Create a test peer for mcp-test
+out=$(sudo ./roundtable wg peer new --type agent mcp-test 2>&1 || true)
+echo "$out" | grep -qi "created" && pass "17.1 Create test peer mcp-test" || skip "17.1: peer create failed — $(echo "$out" | head -1)"
+
+# Install MCP access on the test peer
+out=$(sudo ./roundtable mcp install mcp-test --allow "agent list,agent resize *" 2>&1)
+echo "$out" | grep -qi "installed" && pass "17.2 Install MCP access for mcp-test" || fail "17.2: $(echo "$out" | head -2)"
+
+# Check permissions file exists
+[[ -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/permissions/mcp-test.yml ]] && pass "17.3 Permission file exists" || fail "17.3 permission file missing"
+
+# Check API key file exists
+[[ -f /opt/hermes-agents/arthur/home/cli-roundtable/.roundtable/api-keys/mcp-test ]] && pass "17.4 API key file exists" || fail "17.4 API key file missing"
+
+# Permissions command
+out=$(./roundtable mcp permissions mcp-test 2>&1)
+echo "$out" | grep -qi "API key" && pass "17.5 Permissions shows API key" || fail "17.5: $(echo "$out" | head -2)"
+echo "$out" | grep -qi "agent list" && pass "17.6 Permissions shows patterns" || fail "17.6: $(echo "$out" | head -2)"
+
+# Grant more permissions
+out=$(sudo ./roundtable mcp grant mcp-test "agent create *,proxy list" 2>&1)
+echo "$out" | grep -qi "granted" && pass "17.7 Grant additional permissions" || fail "17.7: $(echo "$out" | head -1)"
+
+# Revoke a permission
+out=$(sudo ./roundtable mcp revoke mcp-test "agent create *" 2>&1)
+echo "$out" | grep -qi "removed" && pass "17.8 Revoke permission pattern" || fail "17.8: $(echo "$out" | head -1)"
+
+# Revoke all
+out=$(sudo ./roundtable mcp revoke mcp-test --all 2>&1)
+echo "$out" | grep -qi "revoked" && pass "17.9 Revoke all permissions" || fail "17.9: $(echo "$out" | head -1)"
+
+# Grant again for the real test
+sudo ./roundtable mcp grant mcp-test "agent list" >/dev/null 2>&1 || true
+
+# List command
+out=$(./roundtable mcp list 2>&1)
+echo "$out" | grep -qi "mcp-test" && pass "17.10 List shows authorized agent" || fail "17.10: $(echo "$out" | head -2)"
+
+# Start MCP server
+out=$(sudo ./roundtable mcp start 2>&1)
+echo "$out" | grep -qi "started" && pass "17.11 MCP server started" || fail "17.11: $(echo "$out" | head -2)"
+
+# Status shows running
+out=$(./roundtable mcp status 2>&1)
+echo "$out" | grep -qi "running" && pass "17.12 MCP status shows running" || fail "17.12: $(echo "$out" | head -2)"
+
+# MCP list after start shows server
+out=$(./roundtable mcp list 2>&1)
+echo "$out" | grep -qi "Connect:" && pass "17.13 MCP list shows server info" || fail "17.13: $(echo "$out" | head -2)"
+
+# Stop MCP server
+out=$(sudo ./roundtable mcp stop 2>&1)
+echo "$out" | grep -qi "stopped" && pass "17.14 MCP server stopped" || fail "17.14: $(echo "$out" | head -1)"
+
+# Uninstall
+out=$(sudo ./roundtable mcp uninstall mcp-test 2>&1)
+echo "$out" | grep -qi "uninstalled" && pass "17.15 MCP uninstalled" || fail "17.15: $(echo "$out" | head -1)"
+
+# Clean up the peer
+sudo ./roundtable wg peer rm --type agent mcp-test 2>/dev/null || true
 
 # ── Summary ──
 echo ""
