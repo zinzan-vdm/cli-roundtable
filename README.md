@@ -189,11 +189,11 @@ The `agent upgrade` command updates Hermes Agent inside the container. It uses t
 
 Use `--version` to set a target version. The version is a Hermes Agent release tag or branch name. For example, `--version v2026.8.1`.
 
-The `snapshot` commands manage LXD container snapshots. A snapshot captures the full filesystem and state of the agent. The host-side peer records, proxy records, and IP allocation are not affected. Use snapshots to create a restore point before an upgrade or configuration change.
+The `snapshot` commands manage LXD container snapshots. A snapshot captures the full filesystem and state of the container. The host-side peer records, proxy records, and IP allocation stay unchanged. Use snapshots to create a restore point before you change the configuration or upgrade.
 
-The `export` command creates a portable archive of the agent. The archive contains the container rootfs, the volume directory, and a manifest with proxy records. The host-side state for WireGuard (IP allocation, keys, peer records) is not saved. The export archive is for migration to a different host.
+The `export` command creates a portable archive. The archive contains the container rootfs, the volume directory, and a manifest with proxy records. The WireGuard state from the source host (IP, keys, peer records) stays on the source host. Use the export archive for migration to a different host.
 
-The `import` command recreates the agent from an export archive. The import host assigns new IPs and WireGuard keys. It then imports the container and restores the volume and proxy records. Use this command when moving an agent between cluster hosts.
+The `import` command recreates the agent from an export archive. The new host assigns new IPs and WireGuard keys. It then imports the container. It restores the volume and the proxy records. Use this command to move an agent between cluster hosts.
 
 ### Proxy commands
 
