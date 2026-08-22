@@ -28,6 +28,8 @@ cleanup() {
   sudo userdel -r roundtable 2>/dev/null || true
   sudo rm -f /etc/ssh/sshd_config.d/99-roundtable.conf /etc/sudoers.d/99-roundtable
   rm -f /tmp/host-a.yml /tmp/host-a-2.yml /tmp/bad.yml /tmp/invite-test.yml
+  sudo lxc delete roundtable-test-snap/snap-test 2>/dev/null || true
+  rm -f /tmp/test-export-*.tar.gz
 }
 
 trap cleanup EXIT
@@ -446,6 +448,159 @@ if lxc list -c n 2>/dev/null | grep -q roundtable-; then
   sudo ./roundtable proxy disable "$((test_port + 1))" "${test_agent#roundtable-}" 2>&1 > /dev/null
 else
   skip "9.7-9.20 No agent container — skip real proxy tests"
+fi
+
+# ── Phase 10: Agent upgrade arg validation ──
+echo ""
+echo "── Phase 10: Agent upgrade ──"
+
+# Without args — shows usage
+out=$(./roundtable agent upgrade 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "10.1 upgrade without args shows usage" || fail "10.1 upgrade no args: $(echo "$out" | head -1)"
+
+# --all flag parses
+out=$(./roundtable agent upgrade --all 2>&1 || true)
+echo "$out" | grep -qiE "(No agents|usage)" && pass "10.2 upgrade --all parses (result: $(echo "$out" | head -1 | tr -d '\n'))" || fail "10.2 upgrade --all: $out"
+
+# --version with tag
+out=$(./roundtable agent upgrade --version v2026.8.1 arthur 2>&1 || true)
+echo "$out" | grep -qiE "(Agent.*not found|usage)" && pass "10.3 upgrade --version merges tag" || fail "10.3 upgrade --version: $(echo "$out" | head -1)"
+
+# --version without value — should error
+out=$(./roundtable agent upgrade --version 2>&1 || true)
+echo "$out" | grep -qi "requires" && pass "10.4 upgrade --version without value" || fail "10.4: $(echo "$out" | head -1)"
+
+# --bad-flag — should error
+out=$(./roundtable agent upgrade --bad-flag arthur 2>&1 || true)
+echo "$out" | grep -qi "unknown flag" && pass "10.5 upgrade unknown flag" || fail "10.5: $(echo "$out" | head -1)"
+
+# Multiple agent names
+out=$(./roundtable agent upgrade arthur bob 2>&1 || true)
+echo "$out" | grep -qiE "(not found|usage)" && pass "10.6 upgrade multiple names" || fail "10.6: $(echo "$out" | head -1)"
+
+# Single agent name — runs upgrade_one_agent path
+out=$(./roundtable agent upgrade arthur 2>&1 || true)
+echo "$out" | grep -qiE "(not found|upgrading)" && pass "10.7 upgrade single name" || fail "10.7: $(echo "$out" | head -1)"
+
+# --all with --version
+out=$(./roundtable agent upgrade --all --version v2026.8.1 2>&1 || true)
+echo "$out" | grep -qiE "(No agents|not found)" && pass "10.8 upgrade --all --version" || fail "10.8: $(echo "$out" | head -1)"
+
+# ── Phase 11: Agent snapshot arg validation ──
+echo ""
+echo "── Phase 11: Agent snapshot ──"
+
+# snapshot without subcommand
+out=$(./roundtable agent snapshot 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "11.1 snapshot without subcommand" || fail "11.1: $(echo "$out" | head -1)"
+
+# snapshot create without name
+out=$(./roundtable agent snapshot create 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "11.2 snapshot create without name" || fail "11.2: $(echo "$out" | head -1)"
+
+# snapshot list without name
+out=$(./roundtable agent snapshot list 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "11.3 snapshot list without name" || fail "11.3: $(echo "$out" | head -1)"
+
+# snapshot restore without snapshot name
+out=$(./roundtable agent snapshot restore arthur 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "11.4 snapshot restore without snap name" || fail "11.4: $(echo "$out" | head -1)"
+
+# snapshot delete without snapshot name
+out=$(./roundtable agent snapshot delete arthur 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "11.5 snapshot delete without snap name" || fail "11.5: $(echo "$out" | head -1)"
+
+# snapshot with bad subcommand
+out=$(./roundtable agent snapshot unknown arthur 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "11.6 snapshot unknown subcommand" || fail "11.6: $(echo "$out" | head -1)"
+
+# snapshot restore with bad snap name — should try lxc restore and fail gracefully
+if lxc info roundtable-test-snap &>/dev/null 2>&1; then
+  out=$(sudo ./roundtable agent snapshot restore arthur nonexistent 2>&1 || true)
+  echo "$out" | grep -qiE "(not found|error)" && pass "11.7 snapshot restore nonexistent snap" || fail "11.7: $(echo "$out" | head -1)"
+else
+  skip "11.7 snapshot restore (no test container)"
+fi
+
+# ── Phase 12: Agent export/import arg validation ──
+echo ""
+echo "── Phase 12: Agent export/import ──"
+
+# export without name
+out=$(./roundtable agent export 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "12.1 export without name" || fail "12.1: $(echo "$out" | head -1)"
+
+# export with --output flag
+out=$(./roundtable agent export --output /tmp arthur 2>&1 || true)
+echo "$out" | grep -qiE "(not found|exporting)" && pass "12.2 export --output DIR name" || fail "12.2: $(echo "$out" | head -1)"
+
+# export --output without value — should error
+out=$(./roundtable agent export --output 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "12.3 export --output without value" || fail "12.3: $(echo "$out" | head -1)"
+
+# export with bad flag
+out=$(./roundtable agent export --bad-flag 2>&1 || true)
+echo "$out" | grep -qi "unknown flag" && pass "12.4 export unknown flag" || fail "12.4: $(echo "$out" | head -1)"
+
+# import without name
+out=$(./roundtable agent import 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "12.5 import without name" || fail "12.5: $(echo "$out" | head -1)"
+
+# import with name but no archive
+out=$(./roundtable agent import arthur 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "12.6 import without archive" || fail "12.6: $(echo "$out" | head -1)"
+
+# import with nonexistent archive
+out=$(./roundtable agent import arthur /tmp/nonexistent-export.tar.gz 2>&1 || true)
+echo "$out" | grep -qi "not found" && pass "12.7 import nonexistent archive" || fail "12.7: $(echo "$out" | head -1)"
+
+# ── Phase 13: Real snapshot + export (conditional) ──
+echo ""
+echo "── Phase 13: Real snapshot + export ──"
+if lxc list -c n 2>/dev/null | grep -q roundtable-; then
+  test_agent=$(lxc list -c n 2>/dev/null | grep roundtable- | head -1 | awk '{print $2}')
+  test_name="${test_agent#roundtable-}"
+
+  # Snapshot create (LXD auto-generates the snapshot name)
+  out=$(sudo ./roundtable agent snapshot create "$test_name" 2>&1)
+  echo "$out" | grep -q "Snapshot created" && pass "13.1 Snapshot create on ${test_name}" || fail "13.1 snapshot create: $(echo "$out" | head -1)"
+
+  # Snapshot list returns content (not empty or usage)
+  out=$(./roundtable agent snapshot list "$test_name" 2>&1)
+  echo "$out" | grep -q "Snapshots" && pass "13.2 Snapshot list returns snapshot block" || fail "13.2 snapshot list: $(echo "$out" | head -3)"
+
+  # Snapshot create is idempotent with --reuse
+  out=$(sudo ./roundtable agent snapshot create "$test_name" 2>&1)
+  echo "$out" | grep -q "Snapshot created" && pass "13.3 Snapshot create idempotent" || fail "13.3 snapshot reuse: $(echo "$out" | head -1)"
+
+  # Find auto-generated snapshot name and delete it
+  snap_name=$(lxc info "$test_agent" 2>/dev/null | sed -n '/^Snapshots:/,/^[A-Z]/p' | head -n -1 | grep -oP '^\s+\K\S+' | head -1)
+  if [[ -n "$snap_name" ]]; then
+    out=$(sudo ./roundtable agent snapshot delete "$test_name" "$snap_name" 2>&1)
+    echo "$out" | grep -q "deleted" && pass "13.4 Snapshot delete (${snap_name})" || fail "13.4 snapshot delete: $(echo "$out" | head -1)"
+
+    # List after delete — should not show the deleted snap
+    out=$(./roundtable agent snapshot list "$test_name" 2>&1)
+    ! echo "$out" | grep -q "$snap_name" && pass "13.5 Snapshot list after delete" || fail "13.5 snapshot still listed"
+  else
+    skip "13.4-13.5 Could not find snapshot name"
+  fi
+
+  # Export the agent
+  out=$(sudo ./roundtable agent export "$test_name" --output /tmp 2>&1)
+  echo "$out" | grep -q "Exported:" && pass "13.6 Export ${test_name}" || fail "13.6 export: $(echo "$out" | head -1)"
+  # Find the export archive (latest one)
+  export_archive=$(ls -t /tmp/${test_name}-export-*.tar.gz 2>/dev/null | head -1)
+  if [[ -n "$export_archive" ]] && [[ -f "$export_archive" ]]; then
+    pass "13.7 Export archive exists: $(basename $export_archive)"
+    tar tzf "$export_archive" 2>/dev/null | grep -q "container.tar.gz" && pass "13.8 Export archive contains container.tar.gz" || fail "13.8 container in archive"
+    tar tzf "$export_archive" 2>/dev/null | grep -q "manifest.yml" && pass "13.9 Export archive contains manifest.yml" || fail "13.9 manifest in archive"
+    rm -f "$export_archive"
+  else
+    fail "13.7-13.9 No export archive found"
+  fi
+else
+  skip "13.1-13.9 No agent container — skip real snapshot/export"
 fi
 
 # ── Summary ──

@@ -171,9 +171,29 @@ The default peer type is `foreign`.
 | `agent setup <name>` | Run the Hermes setup in the container |
 | `agent gateway up <name>` | Start the messaging gateway |
 | `agent gateway down <name>` | Stop the messaging gateway |
+| `agent upgrade <name>` | Upgrade Hermes in one container |
+| `agent upgrade --all` | Upgrade Hermes in all containers |
+| `agent upgrade --version TAG <name>` | Upgrade to a specific version |
+| `agent snapshot create <name>` | Create a container snapshot |
+| `agent snapshot list <name>` | Show all snapshots for an agent |
+| `agent snapshot restore <name> <snap>` | Restore the container to a snapshot |
+| `agent snapshot delete <name> <snap>` | Delete a snapshot |
+| `agent export <name>` | Export agent to a portable archive |
+| `agent export <name> --output DIR` | Export to a custom directory |
+| `agent import <name> <archive>` | Import agent from an archive |
 | `agent delete <name>` | Delete the agent and all its resources |
 
 The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
+
+The `agent upgrade` command updates Hermes Agent inside the container. It uses the built-in `hermes update` command. You do not need to rebuild the golden image. The container keeps all its state and data.
+
+Use `--version` to set a target version. The version is a Hermes Agent release tag or branch name. For example, `--version v2026.8.1`.
+
+The `snapshot` commands manage LXD container snapshots. A snapshot captures the full filesystem and state of the container. The host-side peer records, proxy records, and IP allocation stay unchanged. Use snapshots to create a restore point before you change the configuration or upgrade.
+
+The `export` command creates a portable archive. The archive contains the container rootfs, the volume directory, and a manifest with proxy records. The WireGuard state from the source host (IP, keys, peer records) stays on the source host. Use the export archive for migration to a different host.
+
+The `import` command recreates the agent from an export archive. The new host assigns new IPs and WireGuard keys. It then imports the container. It restores the volume and the proxy records. Use this command to move an agent between cluster hosts.
 
 ### Proxy commands
 

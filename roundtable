@@ -28,6 +28,10 @@ usage() {
   printf "  %-42s %s\n" "agent logs <name>" "Follow agent journal"
   printf "  %-42s %s\n" "agent setup <name>" "Run hermes setup"
   printf "  %-42s %s\n" "agent gateway up|down <name>" "Start/stop the Hermes gateway"
+  printf "  %-42s %s\n" "agent upgrade [--version TAG] [--all|<name>]" "Upgrade Hermes in one or all agents"
+  printf "  %-42s %s\n" "agent snapshot create|list|restore|delete <name> [<snap>]" "Manage container snapshots"
+  printf "  %-42s %s\n" "agent export <name> [--output DIR]" "Export agent to a portable archive"
+  printf "  %-42s %s\n" "agent import <name> <archive>" "Import agent from an archive"
   printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + remove peer"
   echo ""
   echo "Proxy (port forwarding):"
@@ -1170,6 +1174,10 @@ cmd_agent() {
     setup)
       lxc exec "$(agent_lxc_name "${1:?Usage: roundtable agent setup <name>}")" -- hermes setup ;;
     gateway) cmd_agent_gateway "$@" ;;
+    upgrade) cmd_agent_upgrade "$@" ;;
+    snapshot) cmd_agent_snapshot "$@" ;;
+    export)  cmd_agent_export "$@" ;;
+    import)  cmd_agent_import "$@" ;;
     delete)  cmd_agent_delete "$@" ;;
     *)       usage ;;
   esac
@@ -1281,6 +1289,364 @@ cmd_agent_delete() {
   rm -rf "${VOLUMES_DIR}/${name}"
 
   echo "Agent '${name}' deleted." >&2
+}
+
+# ── Agent upgrade ──────────────────────────────────────────────────
+# Upgrade Hermes inside one or all agent containers. Uses the built-in
+# 'hermes update' command. This is the same approach that the golden
+# image builder uses: --version maps to a git branch or tag.
+#
+# Examples:
+#   roundtable agent upgrade arthur
+#   roundtable agent upgrade --all
+#   roundtable agent upgrade --version v2026.8.1 arthur
+
+upgrade_one_agent() {
+  local name="$1" version="$2" lxc_name
+  lxc_name=$(agent_lxc_name "$name")
+
+  if ! lxc info "$lxc_name" &>/dev/null; then
+    echo "  Agent '${name}' not found." >&2
+    return 1
+  fi
+
+  echo "==> Upgrading Hermes in '${name}'..." >&2
+
+  local upgrade_cmd="hermes update --yes"
+
+  if [[ -n "$version" ]]; then
+    echo "  Target version: ${version}" >&2
+    lxc exec "$lxc_name" -- hermes update --yes --branch "$version"
+  else
+    if lxc exec "$lxc_name" -- hermes update --check &>/dev/null; then
+      echo "  Already up to date." >&2
+      return 0
+    fi
+    lxc exec "$lxc_name" -- $upgrade_cmd
+  fi
+
+  echo "  Upgraded." >&2
+}
+
+cmd_agent_upgrade() {
+  local version="" upgrade_all=false names=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version)
+        version="${2:-}"
+        [[ -n "$version" ]] || { echo "Error: --version requires a tag or branch name" >&2; exit 1; }
+        shift 2
+        ;;
+      --version=*)
+        version="${1#*=}"
+        shift
+        ;;
+      --all)
+        upgrade_all=true
+        shift
+        ;;
+      -*)
+        echo "Error: unknown flag $1" >&2
+        exit 1
+        ;;
+      *)
+        names+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if $upgrade_all; then
+    local lxc_names
+    lxc_names=$(lxc list -c n -f csv "roundtable-" 2>/dev/null) || true
+    [[ -z "$lxc_names" ]] && { echo "No agents found." >&2; exit 0; }
+    for lxc_name in $lxc_names; do
+      upgrade_one_agent "${lxc_name#roundtable-}" "$version"
+    done
+  elif [[ ${#names[@]} -gt 0 ]]; then
+    for name in "${names[@]}"; do
+      upgrade_one_agent "$name" "$version"
+    done
+  else
+    echo "Usage: roundtable agent upgrade [--version TAG] [--all|<name>...]" >&2
+    exit 1
+  fi
+}
+
+# ── Agent snapshots ─────────────────────────────────────────────────
+# LXD container snapshots capture the full filesystem and state of an
+# agent. The host-side peer records, proxy records, and IP allocation
+# stay unchanged. Use snapshots to roll back after a failed upgrade or
+# configuration change.
+#
+# Examples:
+#   roundtable agent snapshot create arthur
+#   roundtable agent snapshot list arthur
+#   roundtable agent snapshot restore arthur backup-2026-08-22T12:00:00Z
+#   roundtable agent snapshot delete arthur backup-2026-08-22T12:00:00Z
+
+cmd_agent_snapshot() {
+  local action="${1:-}"; shift 2>/dev/null || true
+  local name="${1:?Usage: roundtable agent snapshot create|list|restore|delete <name> [<snap>]}"
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
+
+  case "$action" in
+    create)
+      lxc snapshot "$lxc_name" --reuse
+      echo "Snapshot created for '${name}'." >&2
+      ;;
+    list)
+      lxc info "$lxc_name" 2>/dev/null | sed -n '/^Snapshots:/,/^[A-Z]/p' | head -n -1
+      ;;
+    restore)
+      local snap="${1:?Usage: roundtable agent snapshot restore <name> <snapshot>}"
+      lxc restore "$lxc_name" "$snap"
+      echo "Snapshot '${snap}' restored for '${name}'." >&2
+      ;;
+    delete)
+      local snap="${1:?Usage: roundtable agent snapshot delete <name> <snapshot>}"
+      lxc delete "$lxc_name/$snap"
+      echo "Snapshot '${snap}' deleted for '${name}'." >&2
+      ;;
+    *)
+      echo "Usage: roundtable agent snapshot create|list|restore|delete <name> [<snap>]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# ── Agent export ───────────────────────────────────────────────────
+# Export an agent into a portable tarball for migration. The archive
+# contains a LXD container export, the volume directory, and a
+# manifest with proxy records. Host-side state (IP, peer keys, WG
+# config) is NOT included — the import host assigns those fresh.
+#
+# Examples:
+#   roundtable agent export arthur
+#   roundtable agent export arthur --output ~/backups/
+
+cmd_agent_export() {
+  local name output_dir="."
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output) output_dir="${2:-.}"; shift 2 ;;
+      --output=*) output_dir="${1#*=}"; shift ;;
+      -*)
+        echo "Error: unknown flag $1" >&2
+        exit 1
+        ;;
+      *)
+        name="$1"; shift ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable agent export <name> [--output DIR]" >&2; exit 1; }
+
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
+  local agent_dir="${VOLUMES_DIR}/${name}"
+  local snap_name="migrate-export"
+  local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
+  local workdir; workdir=$(mktemp -d)
+
+  echo "==> Exporting agent '${name}'..." >&2
+
+  # Stop the container for a clean filesystem state
+  if lxc info "$lxc_name" &>/dev/null; then
+    echo "  Stopping container..." >&2
+    lxc stop "$lxc_name" 2>/dev/null || true
+    sleep 2
+  else
+    echo "Error: agent '${name}' not found." >&2
+    rm -rf "$workdir"
+    exit 1
+  fi
+
+  # LXD snapshot + export (container only, no existing snapshots)
+  echo "  Creating temp snapshot..." >&2
+  lxc snapshot "$lxc_name" "$snap_name" 2>/dev/null && {
+    echo "  Exporting container rootfs..." >&2
+    lxc export "$lxc_name/$snap_name" "${workdir}/container.tar.gz" --instance-only
+    lxc delete "$lxc_name/$snap_name"
+  } || {
+    # Fallback: export running container (may be inconsistent but still usable)
+    echo "  ⚠ Snapshot failed, exporting running container..." >&2
+    lxc export "$lxc_name" "${workdir}/container.tar.gz" --instance-only
+  }
+
+  echo "  Starting container..." >&2
+  lxc start "$lxc_name" 2>/dev/null || true
+
+  # Volume
+  local volume_size volume_path="${agent_dir}/volume"
+  if [[ -d "$volume_path" ]] && [[ -n "$(ls -A "$volume_path" 2>/dev/null)" ]]; then
+    echo "  Archiving volume..." >&2
+    tar czf "${workdir}/volume.tar.gz" -C "$volume_path" .
+    volume_size=$(du -sh "$volume_path" | cut -f1)
+  else
+    volume_size="0"
+  fi
+
+  # Manifest
+  local manifest="${workdir}/manifest.yml"
+  {
+    echo "# cli-roundtable agent export manifest"
+    echo "name: ${name}"
+    echo "created: ${ts}"
+    echo "volume_size: ${volume_size}"
+    echo "proxies:"
+
+    if [[ -d "$PROXIES_DIR" ]]; then
+      for record in "$PROXIES_DIR"/*.yml; do
+        [[ -f "$record" ]] || continue
+        local record_agent
+        record_agent=$(yq '.agent // ""' "$record") || true
+        [[ "$record_agent" == "$name" ]] || continue
+
+        local host_port container_port public
+        host_port=$(yq '.host_port // ""' "$record")
+        container_port=$(yq '.container_port // ""' "$record")
+        public=$(yq '.public // false' "$record")
+        echo "  - host_port: ${host_port}"
+        echo "    container_port: ${container_port}"
+        echo "    bind_ip: \"$([ "$public" = "true" ] && echo "0.0.0.0" || echo "127.0.0.1")\""
+      done
+    fi
+  } > "$manifest"
+
+  # Pack outer archive
+  local archive_path="${output_dir}/${name}-export-${ts}.tar.gz"
+  mkdir -p "$output_dir"
+  tar czf "$archive_path" -C "$workdir" .
+
+  rm -rf "$workdir"
+
+  echo "Exported: ${archive_path}" >&2
+}
+
+# ── Agent import ───────────────────────────────────────────────────
+# Import an agent from a portable archive created by 'agent export'.
+# The import host assigns new IPs and WireGuard keys. Proxy records
+# from the manifest are restored. The agent container and volume are
+# recreated.
+#
+# Examples:
+#   roundtable agent import arthur arthur-export-20260822T120000Z.tar.gz
+
+cmd_agent_import() {
+  local name="${1:?Usage: roundtable agent import <name> <archive>}"
+  local archive="${2:?Usage: roundtable agent import <name> <archive>}"
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
+
+  [[ -f "$archive" ]] || { echo "Error: archive not found: ${archive}" >&2; exit 1; }
+
+  load_config
+  init_state_dir
+
+  # Check no existing container or peer
+  if lxc info "$lxc_name" &>/dev/null; then
+    echo "Error: agent '${name}' already exists on this host." >&2
+    exit 1
+  fi
+  local record_path; record_path=$(peer_record_path "$name" "agent")
+  if [[ -f "$record_path" ]]; then
+    echo "Error: WireGuard peer '${name}' already exists on this host." >&2
+    exit 1
+  fi
+
+  echo "==> Importing agent '${name}'..." >&2
+
+  local workdir; workdir=$(mktemp -d)
+
+  # Extract outer archive
+  tar xzf "$archive" -C "$workdir"
+
+  # Parse manifest
+  local manifest="${workdir}/manifest.yml"
+  if [[ ! -f "$manifest" ]]; then
+    echo "Warning: manifest.yml not found. Importing without proxy records." >&2
+  fi
+
+  # Create the volume
+  local agent_dir="${VOLUMES_DIR}/${name}"
+  mkdir -p "${agent_dir}/volume"
+  local volume_archive="${workdir}/volume.tar.gz"
+  if [[ -f "$volume_archive" ]]; then
+    echo "  Restoring volume..." >&2
+    tar xzf "$volume_archive" -C "${agent_dir}/volume"
+  fi
+
+  # Create new WireGuard peer (allocates new IP + keys on this host)
+  echo "  Creating WireGuard peer..." >&2
+  local wg_config
+  wg_config=$(cmd_wg_peer_new --type agent "$name") || {
+    echo "Error: failed to create WireGuard peer." >&2
+    rm -rf "$workdir"
+    exit 1
+  }
+
+  # Import the LXD container
+  local container_archive="${workdir}/container.tar.gz"
+  if [[ ! -f "$container_archive" ]]; then
+    echo "Error: container.tar.gz not found in archive." >&2
+    rm -rf "$workdir"
+    exit 1
+  fi
+  echo "  Importing container..." >&2
+  lxc import "$container_archive" "$lxc_name"
+  echo "  Starting container..." >&2
+  lxc start "$lxc_name"
+
+  # Wait for container to boot
+  sleep 5
+
+  # Override the old WG config with the new one
+  local agent_conf_path; agent_conf_path=$(peer_config_path "$name" "agent")
+  echo "  Installing WireGuard config..." >&2
+  cat "$agent_conf_path" | lxc exec "$lxc_name" -- tee /etc/wireguard/wg0.conf > /dev/null
+  lxc exec "$lxc_name" -- systemctl enable wg-quick@wg0 2>/dev/null || true
+  lxc exec "$lxc_name" -- wg-quick up wg0 2>/dev/null || true
+
+  # Attach the volume
+  echo "  Attaching volume..." >&2
+  lxc config device add "$lxc_name" volume disk \
+    source="${agent_dir}/volume" path=/opt/data
+
+  # Restore proxy records
+  if [[ -f "$manifest" ]]; then
+    local count host_port container_port bind_ip
+    count=$(yq '.proxies | length' "$manifest") || true
+    if [[ "$count" -gt 0 ]]; then
+      echo "  Restoring proxy records..." >&2
+      for i in $(seq 0 $((count - 1))); do
+        host_port=$(yq ".proxies[$i].host_port" "$manifest")
+        container_port=$(yq ".proxies[$i].container_port // \"\"" "$manifest")
+        bind_ip=$(yq ".proxies[$i].bind_ip // \"127.0.0.1\"" "$manifest")
+        [[ -n "$host_port" ]] || continue
+        local public_flag=""
+        [[ "$bind_ip" == "0.0.0.0" ]] && public_flag="--public"
+        if [[ "$container_port" != "$host_port" && -n "$container_port" ]]; then
+          cmd_proxy_enable $public_flag "${host_port}:${container_port}" "$name" 2>/dev/null || true
+        else
+          cmd_proxy_enable $public_flag "$host_port" "$name" 2>/dev/null || true
+        fi
+      done
+    fi
+  fi
+
+  rm -rf "$workdir"
+
+  local mesh_ip
+  mesh_ip=$(yq '.ip // ""' "$record_path" 2>/dev/null) || mesh_ip=""
+
+  echo "" >&2
+  echo "Agent '${name}' imported." >&2
+  echo "  Mesh IP:  ${mesh_ip}" >&2
+  echo "  Shell:     roundtable agent shell ${name}" >&2
+  echo "  Setup:     roundtable agent setup ${name}" >&2
+  echo "  Gateway:   roundtable agent gateway up ${name}" >&2
+  lxc list -c n,s,4 "$lxc_name"
 }
 
 # ── Proxy (port forwarding) ────────────────────────────────────────
