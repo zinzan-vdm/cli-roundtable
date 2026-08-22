@@ -217,6 +217,43 @@ The port syntax works in two ways.
 
 The default bind address is `127.0.0.1`. This makes the port reachable only on the host. Add `--public` to bind on all interfaces. With `--public`, the port is reachable from the internet. Use `--public` only when you need it.
 
+### MCP server commands
+
+The MCP server lets an agent run roundtable commands. It uses the Model
+Context Protocol over HTTP. An agent connects with a bearer token. The token
+limits what the agent can do.
+
+| Command | Purpose |
+|---------|---------|
+| `mcp start [--bind IP] [--port PORT]` | Start the MCP server daemon |
+| `mcp stop` | Stop the MCP server daemon |
+| `mcp restart` | Restart the MCP server daemon |
+| `mcp status` | Show daemon status and config |
+| `mcp install <name> [--allow "p1,p2"]` | Create an API key and grant permissions |
+| `mcp uninstall <name>` | Remove the API key and all permissions |
+| `mcp grant <name> "perm1,perm2"` | Add permission patterns to an agent |
+| `mcp revoke <name> "p1,p2" \| --all` | Remove permission patterns |
+| `mcp permissions <name>` | Show API key and current permissions |
+| `mcp list` | Show all authorized agents and server status |
+
+`mcp start` creates a systemd service. It starts the Python MCP server.
+The server listens on the host WireGuard IP by default. Use `--bind` and
+`--port` to change the address.
+
+`mcp install <name>` generates a bearer token and stores it on the host.
+It also writes a permission file with the patterns from `--allow`.
+The token uses the `rtk_` prefix. It has 32 random bytes in hex format.
+The host restricts the token file to owner read and write (chmod 600).
+
+Permission patterns use token-level glob matching. A pattern like
+`agent create *` matches `agent create foo --cpu 4` if the token count
+is the same. Use `*` to match any single token. Each tool maps to a
+roundtable command. For example, `roundtable_agent_create` calls
+`agent create <args>`.
+
+`mcp list` shows all agents that have an API key. It also shows the
+status and the connection URL of the MCP server.
+
 ### Host check command
 
 | Command | Purpose |
