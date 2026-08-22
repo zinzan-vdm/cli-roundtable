@@ -162,7 +162,7 @@ The default peer type is `foreign`.
 | Command | Purpose |
 |---------|---------|
 | `agent list` | List all agent containers |
-| `agent create <name>` | Create an agent container |
+| `agent create <name> [--cpu N] [--memory SIZE]` | Create an agent container |
 | `agent start <name>` | Start an agent container |
 | `agent stop <name>` | Stop an agent container |
 | `agent restart <name>` | Restart an agent container |
@@ -182,6 +182,7 @@ The default peer type is `foreign`.
 | `agent export <name> --output DIR` | Export to a custom directory |
 | `agent import <name> <archive>` | Import agent from an archive |
 | `agent delete <name>` | Delete the agent and all its resources |
+| `agent resize <name> [--cpu N] [--memory SIZE]` | Change CPU or memory limits on a running agent |
 
 The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
 
@@ -194,6 +195,10 @@ The `snapshot` commands manage LXD container snapshots. A snapshot captures the 
 The `export` command creates a portable archive. The archive contains the container rootfs, the volume directory, and a manifest with proxy records. The WireGuard state from the source host (IP, keys, peer records) stays on the source host. Use the export archive for migration to a different host.
 
 The `import` command recreates the agent from an export archive. The new host assigns new IPs and WireGuard keys. It then imports the container. It restores the volume and the proxy records. Use this command to move an agent between cluster hosts.
+
+The `resize` command changes the CPU or memory limits on a running agent. Use `--cpu N` to set the number of vCPUs. Use `--memory SIZE` to set the memory limit. For example, `2GB` or `1536MB`. The limits apply instantly. LXD uses cgroups to enforce them. You can set one or both limits in a single command.
+
+Set `agents.limits.cpu` and `agents.limits.memory` in the config file. These are the default values for all new agents. Use `--cpu` and `--memory` on `agent create` to give a different set of limits to a specific agent.
 
 ### Proxy commands
 
@@ -233,8 +238,8 @@ The tool reads `config.yml`. Copy `config.example.yml` to `config.yml` and edit 
 | `network.wg.subnets.agents` | `10.0.1.0/24` | Local agent IP pool |
 | `network.wg.subnets.foreign` | `10.0.2.0/24` | Laptop and admin IP pool |
 | `network.wg.opts.persistent_keepalive` | `25` | Keepalive interval in seconds |
-| `agents.limits.cpu` | `1` | CPU limit per agent |
-| `agents.limits.memory` | `768MB` | Memory limit per agent |
+| `agents.limits.cpu` | `1` | CPU limit per agent. Can change per container. |
+| `agents.limits.memory` | `768MB` | Memory limit per agent. Can change per container. |
 | `golden-image.base` | `ubuntu:24.04` | Base image for the golden image |
 
 Each host must have a unique `agents` subnet and a unique `foreign` subnet.
