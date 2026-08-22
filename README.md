@@ -251,8 +251,43 @@ is the same. Use `*` to match any single token. Each tool maps to a
 roundtable command. For example, `roundtable_agent_create` calls
 `agent create <args>`.
 
-`mcp list` shows all agents that have an API key. It also shows the
-status and the connection URL of the MCP server.
+`mcp list` shows all agents that have an API key. It also shows
+the status and the connection URL of the MCP server.
+
+### Roundtable status and upgrade commands
+
+`status` shows the current version of roundtable. It also shows the
+latest version tag from git. If an upgrade is available, the output
+shows "upgrade available".
+
+| Command | Purpose |
+|---------|---------|
+| `status` | Show the current version and repository info |
+| `upgrade [--version TAG]` | Upgrade to the latest version or to a specific tag or branch |
+| `upgrade list` | List all available version tags |
+
+`status` reads the version from git. It runs `git describe` to get
+the tag and commit count. It also shows the branch name and the remote
+URL.
+
+`upgrade list` fetches the tags from origin. It shows each tag and
+marks the current version.
+
+`upgrade` without flags fetches the latest tags. It finds the newest
+version tag. If the latest tag is newer than the current version, it
+checks out the tag.
+
+Use `--version TAG` to set a target version. The version is a git tag
+or branch name. For example, `--version v2026-08-07.R0` or
+`--version main`.
+
+If the working tree has local changes, `upgrade` stashes them before
+the checkout. It shows a warning about the stash.
+
+The `check` command shows the current version in its output. It also
+shows the latest version if one is available. During `check --fix`,
+the tool prompts to upgrade after all other issues are resolved. The
+prompt is optional. Answer `y` to upgrade or `N` to skip.
 
 ### Host check command
 

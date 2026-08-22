@@ -48,6 +48,9 @@ usage() {
   printf "  %-42s %s\n" "mcp revoke <name> \"p1,p2\"|--all" "Remove permission patterns"
   printf "  %-42s %s\n" "mcp permissions <name>" "Show agent permissions and API key"
   printf "  %-42s %s\n" "mcp list" "List all authorized agents and server status"
+  printf "  %-42s %s\n" "status" "Show roundtable version and repository info"
+  printf "  %-42s %s\n" "upgrade [--version TAG]" "Upgrade roundtable to latest or a specific version"
+  printf "  %-42s %s\n" "upgrade list" "List all available versions"
   printf "  %-42s %s\n" "check [--fix]" "Check host readiness (auto-fix with --fix)"
   exit 0
 }
@@ -63,6 +66,9 @@ PROXIES_DIR="${ROUNDTABLE_DIR}/proxies"
 API_KEYS_DIR="${ROUNDTABLE_DIR}/mcp/api-keys"
 PERMISSIONS_DIR="${ROUNDTABLE_DIR}/mcp/permissions"
 CLUSTER_SUBNETS_FILE="${ROUNDTABLE_DIR}/cluster-subnets"
+
+ROUNDTABLE_VERSION="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo 'unknown')"
+ROUNDTABLE_BRANCH="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
 
 # ── Privilege escalation ──────────────────────────────────────────
 # These commands always need root (or LXD socket access). When running
@@ -2407,6 +2413,22 @@ cmd_check() {
   echo "  ╚═══════════════════════════════════════════╝"
   echo ""
 
+  # Version info
+  local version_str
+  version_str=$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo "unknown")
+  local latest
+  latest=$(git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "")
+  if [[ -n "$latest" ]]; then
+    if echo "$version_str" | grep -q "^${latest}"; then
+      printf "  %-35s %s\\n" "Roundtable" "[${version_str}] — up to date"
+    else
+      printf "  %-35s %s\\n" "Roundtable" "[${version_str}] — upgrade to ${latest} available"
+    fi
+  else
+    printf "  %-35s %s\\n" "Roundtable" "[${version_str}]"
+  fi
+  echo ""
+
   check() {
     local label="$1" status="$2" detail="$3"
     printf "  %-35s " "${label}"
@@ -2686,6 +2708,27 @@ cmd_check() {
       echo "  == Re-running checks..."
       echo ""
       cmd_check
+
+      # After all fixes are applied, prompt for roundtable upgrade (optional)
+      if [[ "${#errors[@]}" -eq 0 ]]; then
+        local current_version
+        current_version=$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo "unknown")
+        local latest_tag
+        latest_tag=$(git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "")
+        if [[ -n "$latest_tag" ]] && ! echo "$current_version" | grep -q "^${latest_tag}"; then
+          echo ""
+          read -p "  Upgrade roundtable to latest version (${latest_tag})? [y/N] " response
+          if [[ "$response" =~ ^[Yy]$ ]]; then
+            echo ""
+            cmd_roundtable_upgrade --version "$latest_tag"
+            echo ""
+            echo "  == Re-running checks after upgrade..."
+            echo ""
+            cmd_check
+          fi
+        fi
+      fi
+
       return $?
     fi
 
@@ -2791,6 +2834,150 @@ cmd_fix_dns() {
   fi
 }
 
+# ── roundtable self-upgrade ────────────────────────────────────────
+# Show version and repository info, or upgrade the tool itself.
+#
+# Examples:
+#   roundtable status
+#   roundtable upgrade
+#   roundtable upgrade --version v2026-08-07.R0
+#   roundtable upgrade list
+
+roundtable_get_remote_url() {
+  git -C "$ROOT" remote get-url origin 2>/dev/null || echo "unknown"
+}
+
+roundtable_get_latest_tag() {
+  git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo ""
+}
+
+cmd_roundtable_status() {
+  local remote
+  remote=$(roundtable_get_remote_url)
+  local latest
+  latest=$(roundtable_get_latest_tag)
+
+  echo "roundtable ${ROUNDTABLE_VERSION}"
+  echo "  Branch:    ${ROUNDTABLE_BRANCH}"
+  echo "  Remote:    ${remote}"
+
+  if [[ -n "$latest" ]]; then
+    if echo "$ROUNDTABLE_VERSION" | grep -q "^${latest}"; then
+      echo "  Latest:    ${latest} (up to date)"
+    else
+      echo "  Latest:    ${latest} (upgrade available)"
+    fi
+  fi
+}
+
+cmd_roundtable_upgrade() {
+  local sub="${1:-}"
+
+  if [[ "$sub" == "list" ]]; then
+    echo "Fetching tags from origin..."
+    git -C "$ROOT" fetch --tags origin 2>/dev/null || {
+      echo "Error: Cannot reach remote. Check network." >&2
+      exit 1
+    }
+    echo ""
+    echo "Available versions:"
+    local tags
+    tags=$(git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null)
+    if [[ -z "$tags" ]]; then
+      echo "  (no version tags found)"
+    else
+      local current_tag
+      current_tag=$(echo "$ROUNDTABLE_VERSION" | grep -oP '^v\S+' || echo "")
+      while IFS= read -r tag; do
+        [[ -n "$tag" ]] || continue
+        if [[ "$tag" == "$current_tag" ]]; then
+          echo "  ${tag}   (current)"
+        else
+          echo "  ${tag}"
+        fi
+      done <<< "$tags"
+    fi
+    return 0
+  fi
+
+  local version=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version)
+        version="${2:-}"
+        [[ -n "$version" ]] || { echo "Error: --version requires a value" >&2; exit 1; }
+        shift 2
+        ;;
+      --version=*)
+        version="${1#*=}"
+        shift
+        ;;
+      -*)
+        echo "Error: unknown flag $1" >&2; exit 1
+        ;;
+      *)
+        echo "Usage: roundtable upgrade [--version TAG]" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  # Fetch latest tags from remote
+  echo "  Fetching updates..." >&2
+  git -C "$ROOT" fetch --tags origin 2>/dev/null || {
+    echo "Error: Cannot reach remote. Check network." >&2
+    exit 1
+  }
+
+  # Resolve target
+  local target=""
+  if [[ -z "$version" ]]; then
+    target=$(roundtable_get_latest_tag)
+    [[ -n "$target" ]] || { echo "Error: No version tags found on remote." >&2; exit 1; }
+  else
+    # Check if it is a tag
+    if git -C "$ROOT" tag -l "$version" 2>/dev/null | grep -qxF "$version"; then
+      target="$version"
+    elif git -C "$ROOT" branch -r 2>/dev/null | grep -q "origin/${version}$"; then
+      target="origin/${version}"
+    elif git -C "$ROOT" rev-parse --verify "$version" 2>/dev/null; then
+      target="$version"
+    else
+      echo "Error: No tag or branch found: ${version}" >&2
+      exit 1
+    fi
+  fi
+
+  # Check if already on target
+  local current_ref
+  current_ref=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)
+  local target_ref
+  target_ref=$(git -C "$ROOT" rev-parse "$target" 2>/dev/null || echo "")
+
+  if [[ -n "$target_ref" ]] && [[ "$current_ref" == "$target_ref" ]]; then
+    echo "Already at ${target}." >&2
+    return 0
+  fi
+
+  # Stash local changes if any
+  if ! git -C "$ROOT" diff --quiet 2>/dev/null; then
+    echo "  Stashing local changes..." >&2
+    git -C "$ROOT" stash --include-untracked 2>/dev/null || true
+    echo "  ⚠ Local changes stashed. Run 'git stash pop' after upgrade if needed." >&2
+  fi
+
+  # Checkout
+  echo "  Upgrading to ${target}..." >&2
+  if git -C "$ROOT" checkout "$target" 2>&1; then
+    echo "Upgraded to ${target}." >&2
+    echo "  Version: $(git -C "$ROOT" describe --tags --always 2>/dev/null)" >&2
+  else
+    echo "Error: Failed to checkout ${target}." >&2
+    exit 1
+  fi
+}
+
 # ── Main dispatch ────────────────────────────────────────────────
 cmd="${1:-help}"; shift 2>/dev/null || true
 
@@ -2801,5 +2988,7 @@ case "$cmd" in
   proxy)        cmd_proxy "$@" ;;
   mcp)          cmd_mcp "$@" ;;
   check)        cmd_check "$@" ;;
+  status)       cmd_roundtable_status ;;
+  upgrade)      cmd_roundtable_upgrade "$@" ;;
   help|*)       usage ;;
 esac

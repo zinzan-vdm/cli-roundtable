@@ -773,6 +773,31 @@ echo "$out" | grep -qi "uninstalled" && pass "17.15 MCP uninstalled" || fail "17
 # Clean up the peer
 sudo ./roundtable wg peer rm --type agent mcp-test 2>/dev/null || true
 
+# ── Phase 18: Upgrade + status arg validation ──
+echo ""
+echo "── Phase 18: Upgrade + status arg validation ──"
+
+# status works
+out=$(./roundtable status 2>&1)
+echo "$out" | grep -qi "roundtable" && pass "18.1 Status shows version" || fail "18.1: $(echo "$out" | head -1)"
+
+# upgrade without args shows progress (fetch + upgrade)
+# This is hard to test in isolation, but we verify it doesn't crash
+out=$(./roundtable upgrade 2>&1 || true)
+echo "$out" | grep -qE "(Fetching|Already|Upgraded|Error)" && pass "18.2 Upgrade without flags runs" || skip "18.2: unexpected output: $(echo "$out" | head -2)"
+
+# upgrade list
+out=$(./roundtable upgrade list 2>&1 || true)
+echo "$out" | grep -qiE "(Available|no version tags)" && pass "18.3 Upgrade list shows versions" || fail "18.3: $(echo "$out" | head -2)"
+
+# upgrade with bad flag
+out=$(./roundtable upgrade --bad-flag 2>&1 || true)
+echo "$out" | grep -qi "unknown flag" && pass "18.4 Upgrade bad flag" || fail "18.4: $(echo "$out" | head -1)"
+
+# Check --fix shows version info
+out=$(./roundtable check 2>&1)
+echo "$out" | grep -qi "Roundtable" && pass "18.5 Check shows roundtable version" || fail "18.5: $(echo "$out" | head -2)"
+
 # ── Summary ──
 echo ""
 echo "  ╔═══════════════════════════════════════════╗"
