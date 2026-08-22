@@ -178,6 +178,9 @@ The default peer type is `foreign`.
 | `agent snapshot list <name>` | Show all snapshots for an agent |
 | `agent snapshot restore <name> <snap>` | Restore the container to a snapshot |
 | `agent snapshot delete <name> <snap>` | Delete a snapshot |
+| `agent export <name>` | Export agent to a portable archive |
+| `agent export <name> --output DIR` | Export to a custom directory |
+| `agent import <name> <archive>` | Import agent from an archive |
 | `agent delete <name>` | Delete the agent and all its resources |
 
 The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
@@ -187,6 +190,10 @@ The `agent upgrade` command updates Hermes Agent inside the container. It uses t
 Use `--version` to set a target version. The version is a Hermes Agent release tag or branch name. For example, `--version v2026.8.1`.
 
 The `snapshot` commands manage LXD container snapshots. A snapshot captures the full filesystem and state of the agent. The host-side peer records, proxy records, and IP allocation are not affected. Use snapshots to create a restore point before an upgrade or configuration change.
+
+The `export` command creates a portable archive of the agent. The archive contains the container rootfs, the volume directory, and a manifest with proxy records. The host-side state for WireGuard (IP allocation, keys, peer records) is not saved. The export archive is for migration to a different host.
+
+The `import` command recreates the agent from an export archive. The import host assigns new IPs and WireGuard keys. It then imports the container and restores the volume and proxy records. Use this command when moving an agent between cluster hosts.
 
 ### Proxy commands
 
