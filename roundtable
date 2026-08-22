@@ -23,7 +23,7 @@ usage() {
   printf "  %-42s %s\n" "golden-image build <version>" "Build golden image"
   printf "  %-42s %s\n" "golden-image rebuild <version>" "Rebuild golden image"
   printf "  %-42s %s\n" "agent list" "List agents"
-  printf "  %-42s %s\n" "agent create <name>" "Create agent"
+  printf "  %-42s %s\n" "agent create <name> [--cpu N] [--memory SIZE]" "Create agent"
   printf "  %-42s %s\n" "agent start|stop|restart|shell <name>" "Agent lifecycle"
   printf "  %-42s %s\n" "agent logs <name>" "Follow agent journal"
   printf "  %-42s %s\n" "agent setup <name>" "Run hermes setup"
@@ -33,6 +33,7 @@ usage() {
   printf "  %-42s %s\n" "agent export <name> [--output DIR]" "Export agent to a portable archive"
   printf "  %-42s %s\n" "agent import <name> <archive>" "Import agent from an archive"
   printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + remove peer"
+  printf "  %-42s %s\n" "agent resize <name> [--cpu N] [--memory SIZE]" "Resize agent CPU/memory limits"
   echo ""
   echo "Proxy (port forwarding):"
   printf "  %-42s %s\n" "proxy enable [--public] <port>[:<cport>] <agent>" "Forward host:<port> to agent:<cport> (default: same port)"
@@ -1179,14 +1180,51 @@ cmd_agent() {
     export)  cmd_agent_export "$@" ;;
     import)  cmd_agent_import "$@" ;;
     delete)  cmd_agent_delete "$@" ;;
+    resize)  cmd_agent_resize "$@" ;;
     *)       usage ;;
   esac
 }
 
 cmd_agent_create() {
-  local name="${1:?Usage: roundtable agent create <name>}"
+  local name="" cpu="" memory=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cpu)
+        cpu="${2:-}"
+        [[ -n "$cpu" ]] || { echo "Error: --cpu requires a value" >&2; exit 1; }
+        shift 2
+        ;;
+      --cpu=*)
+        cpu="${1#*=}"
+        shift
+        ;;
+      --memory)
+        memory="${2:-}"
+        [[ -n "$memory" ]] || { echo "Error: --memory requires a value" >&2; exit 1; }
+        shift 2
+        ;;
+      --memory=*)
+        memory="${1#*=}"
+        shift
+        ;;
+      -*)
+        echo "Error: unknown flag $1" >&2; exit 1
+        ;;
+      *)
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable agent create <name> [--cpu N] [--memory SIZE]" >&2; exit 1; }
+
   local lxc_name; lxc_name=$(agent_lxc_name "$name")
   load_config
+
+  local cpu_limit="${cpu:-$AGENT_CPU}"
+  local mem_limit="${memory:-$AGENT_MEMORY}"
 
   if ! lxc image alias list 2>/dev/null | grep -q roundtable-agent; then
     echo "No golden image. Run: roundtable golden-image build <version>" >&2
@@ -1198,8 +1236,8 @@ cmd_agent_create() {
 
   echo "==> Launching agent '${name}' (${lxc_name})..." >&2
   lxc launch roundtable-agent "$lxc_name" \
-    -c limits.memory="${AGENT_MEMORY}" \
-    -c limits.cpu="${AGENT_CPU}" \
+    -c limits.memory="${mem_limit}" \
+    -c limits.cpu="${cpu_limit}" \
     -c boot.autostart=true
 
   lxc config device add "$lxc_name" volume disk \
@@ -1647,6 +1685,73 @@ cmd_agent_import() {
   echo "  Setup:     roundtable agent setup ${name}" >&2
   echo "  Gateway:   roundtable agent gateway up ${name}" >&2
   lxc list -c n,s,4 "$lxc_name"
+}
+
+# ── Agent resize ──────────────────────────────────────────────────
+# Change CPU and memory limits on a running agent. Both values apply
+# instantly — LXD updates the cgroup limits on the fly.
+#
+# Examples:
+#   roundtable agent resize arthur --cpu 2
+#   roundtable agent resize arthur --memory 2GB
+#   roundtable agent resize arthur --cpu 4 --memory 4GB
+
+cmd_agent_resize() {
+  local name="" cpu="" memory=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cpu)
+        cpu="${2:-}"
+        [[ -n "$cpu" ]] || { echo "Error: --cpu requires a value" >&2; exit 1; }
+        shift 2
+        ;;
+      --cpu=*)
+        cpu="${1#*=}"
+        shift
+        ;;
+      --memory)
+        memory="${2:-}"
+        [[ -n "$memory" ]] || { echo "Error: --memory requires a value" >&2; exit 1; }
+        shift 2
+        ;;
+      --memory=*)
+        memory="${1#*=}"
+        shift
+        ;;
+      -*)
+        echo "Error: unknown flag $1" >&2; exit 1
+        ;;
+      *)
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { echo "Usage: roundtable agent resize <name> [--cpu N] [--memory SIZE]" >&2; exit 1; }
+  [[ -n "$cpu$memory" ]] || { echo "Error: specify at least one of --cpu or --memory" >&2; exit 1; }
+
+  local lxc_name; lxc_name=$(agent_lxc_name "$name")
+  load_config
+
+  if ! lxc info "$lxc_name" &>/dev/null; then
+    echo "Error: agent '${name}' not found." >&2
+    exit 1
+  fi
+
+  if [[ -n "$cpu" ]]; then
+    echo "==> Setting CPU limit: ${cpu}" >&2
+    lxc config set "$lxc_name" limits.cpu "$cpu"
+  fi
+
+  if [[ -n "$memory" ]]; then
+    echo "==> Setting memory limit: ${memory}" >&2
+    lxc config set "$lxc_name" limits.memory "$memory"
+  fi
+
+  echo "Agent '${name}' resized." >&2
+  lxc list -c n,s,4,m "$lxc_name"
 }
 
 # ── Proxy (port forwarding) ────────────────────────────────────────

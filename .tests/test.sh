@@ -603,6 +603,62 @@ else
   skip "13.1-13.9 No agent container — skip real snapshot/export"
 fi
 
+# ── Phase 14: Agent resize + create flags arg validation ──
+echo ""
+echo "── Phase 14: Agent resize + create flags ──"
+
+# Without args — shows usage
+out=$(sudo ./roundtable agent resize 2>&1 || true)
+echo "$out" | grep -qi "usage" && pass "14.1 resize without args shows usage" || fail "14.1: $(echo "$out" | head -1)"
+
+# Bad flag
+out=$(sudo ./roundtable agent resize --bad-flag 2>&1 || true)
+echo "$out" | grep -qi "unknown flag" && pass "14.2 resize bad flag" || fail "14.2: $(echo "$out" | head -1)"
+
+# Without --cpu or --memory — shows error
+out=$(sudo ./roundtable agent resize nonexistent 2>&1 || true)
+echo "$out" | grep -qi "specify at least" && pass "14.3 resize without --cpu/--memory" || fail "14.3: $(echo "$out" | head -1)"
+
+# Nonexistent agent with valid flags
+out=$(sudo ./roundtable agent resize nonexistent --cpu 2 2>&1 || true)
+echo "$out" | grep -qi "not found" && pass "14.4 resize nonexistent agent" || fail "14.4: $(echo "$out" | head -1)"
+
+# Create with --cpu but no value
+out=$(sudo ./roundtable agent create nonexistent --cpu 2>&1 || true)
+echo "$out" | grep -qi "requires a value" && pass "14.5 create --cpu without value" || fail "14.5: $(echo "$out" | head -1)"
+
+# Create with --memory but no value
+out=$(sudo ./roundtable agent create nonexistent --memory 2>&1 || true)
+echo "$out" | grep -qi "requires a value" && pass "14.6 create --memory without value" || fail "14.6: $(echo "$out" | head -1)"
+
+# Create with bad flag
+out=$(sudo ./roundtable agent create nonexistent --bad-flag 2>&1 || true)
+echo "$out" | grep -qi "unknown flag" && pass "14.7 create bad flag" || fail "14.7: $(echo "$out" | head -1)"
+
+# ── Phase 15: Real resize (conditional) ──
+echo ""
+echo "── Phase 15: Real resize ──"
+if lxc list -c n 2>/dev/null | grep -q roundtable-; then
+  test_agent=$(lxc list -c n 2>/dev/null | grep roundtable- | head -1 | awk '{print $2}')
+  test_name="${test_agent#roundtable-}"
+  before_mem=$(lxc config get "$test_agent" limits.memory 2>/dev/null || echo "none")
+  before_cpu=$(lxc config get "$test_agent" limits.cpu 2>/dev/null || echo "none")
+
+  out=$(sudo ./roundtable agent resize "$test_name" --cpu 2 --memory 1GB 2>&1)
+  echo "$out" | grep -qi "resized" && pass "15.1 Resize ${test_name} OK" || fail "15.1: $(echo "$out" | head -2)"
+
+  after_mem=$(lxc config get "$test_agent" limits.memory)
+  after_cpu=$(lxc config get "$test_agent" limits.cpu)
+  [[ "$after_cpu" == "2" ]] && pass "15.2 CPU limit is 2" || fail "15.2: CPU is ${after_cpu}"
+  [[ "$after_mem" == "1GB" ]] && pass "15.3 Memory limit is 1GB" || fail "15.3: memory is ${after_mem}"
+
+  # Restore original values
+  lxc config set "$test_agent" limits.cpu "$before_cpu" 2>/dev/null || true
+  lxc config set "$test_agent" limits.memory "$before_mem" 2>/dev/null || true
+else
+  skip "15.1-15.3 No agent container — skip real resize tests"
+fi
+
 # ── Summary ──
 echo ""
 echo "  ╔═══════════════════════════════════════════╗"
