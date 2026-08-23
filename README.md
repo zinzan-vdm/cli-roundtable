@@ -173,7 +173,7 @@ The default peer type is `foreign`.
 | `agent gateway down <name>` | Stop the messaging gateway |
 | `agent upgrade <name>` | Upgrade Hermes in one container |
 | `agent upgrade --all` | Upgrade Hermes in all containers |
-| `agent upgrade --version TAG <name>` | Upgrade to a specific version |
+| `agent upgrade --version TAG\|BRANCH <name>` | Upgrade to a specific version |
 | `agent snapshot create <name>` | Create a container snapshot |
 | `agent snapshot list <name>` | Show all snapshots for an agent |
 | `agent snapshot restore <name> <snap>` | Restore the container to a snapshot |
@@ -186,19 +186,38 @@ The default peer type is `foreign`.
 
 The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
 
-The `agent upgrade` command updates Hermes Agent inside the container. It uses the built-in `hermes update` command. You do not need to rebuild the golden image. The container keeps all its state and data.
+The `agent upgrade` command updates Hermes in an agent container.
+Without `--version`, it runs `hermes update --yes`.
+With `--version`, it tries `hermes update --branch` first.
+Branches get the full update pipeline from Hermes.
+Version tags use a git checkout fallback instead.
 
-Use `--version` to set a target version. The version is a Hermes Agent release tag or branch name. For example, `--version v2026.8.1`.
+The `snapshot` commands work with LXD container snapshots.
+A snapshot captures the full filesystem and container state.
+The peer records, proxy records, and IP allocation on the host stay unchanged.
+Use snapshots to create a restore point before you change the configuration or upgrade.
 
-The `snapshot` commands manage LXD container snapshots. A snapshot captures the full filesystem and state of the container. The host-side peer records, proxy records, and IP allocation stay unchanged. Use snapshots to create a restore point before you change the configuration or upgrade.
+The `export` command creates a portable archive.
+The archive contains the container rootfs, the volume directory, and a proxy record manifest.
+The WireGuard keys and IP addresses stay on the source host.
+Use the export archive to migrate an agent to a different host.
 
-The `export` command creates a portable archive. The archive contains the container rootfs, the volume directory, and a manifest with proxy records. The WireGuard state from the source host (IP, keys, peer records) stays on the source host. Use the export archive for migration to a different host.
+The `import` command recreates an agent from an export archive.
+The new host creates new WireGuard keys and assigns new IPs.
+It imports the container and restores the volume and proxy records.
+Use this command to move an agent between cluster hosts.
 
-The `import` command recreates the agent from an export archive. The new host assigns new IPs and WireGuard keys. It then imports the container. It restores the volume and the proxy records. Use this command to move an agent between cluster hosts.
+The `resize` command changes CPU or memory limits on a running agent.
+Use `--cpu N` to set the number of vCPUs.
+Use `--memory SIZE` to set the memory limit.
+For example, set `--memory 2GB` or `--memory 1536MB`.
+The limits apply instantly.
+LXD uses cgroups to enforce them.
+Set one or both limits in a single command.
 
-The `resize` command changes the CPU or memory limits on a running agent. Use `--cpu N` to set the number of vCPUs. Use `--memory SIZE` to set the memory limit. For example, `2GB` or `1536MB`. The limits apply instantly. LXD uses cgroups to enforce them. You can set one or both limits in a single command.
-
-Set `agents.limits.cpu` and `agents.limits.memory` in the config file. These are the default values for all new agents. Use `--cpu` and `--memory` on `agent create` to give a different set of limits to a specific agent.
+Set `agents.limits.cpu` and `agents.limits.memory` in the config file.
+These are the default limits for new agents.
+Use `--cpu` and `--memory` on `agent create` to set different limits for a specific agent.
 
 ### Proxy commands
 
