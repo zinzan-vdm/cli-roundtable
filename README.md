@@ -256,38 +256,73 @@ the status and the connection URL of the MCP server.
 
 ### Roundtable status and upgrade commands
 
-`status` shows the current version of roundtable. It also shows the
-latest version tag from git. If an upgrade is available, the output
-shows "upgrade available".
+`status` shows the version of roundtable.
+It also shows the branch name and the remote URL.
 
 | Command | Purpose |
 |---------|---------|
 | `status` | Show the current version and repository info |
-| `upgrade [--version TAG|unstable|main]` | Upgrade to the latest version, or to a specific tag or branch. Use `main` or `unstable` to switch to the unstable development branch |
+| `upgrade [--version TAG|unstable|main]` | Upgrade to the latest version or to a specific tag or branch |
 | `upgrade list` | List all available version tags |
 
-`status` reads the version from git. It runs `git describe` to get
-the tag and commit count. It also shows the branch name and the remote
-URL.
+`status` reads the version from git.
+It runs `git describe` to get the tag and commit count.
 
-`upgrade list` fetches the tags from origin. It shows each tag and
-marks the current version.
+**Version comparison**
 
-`upgrade` without flags fetches the latest tags. It finds the newest
-version tag. If the latest tag is newer than the current version, it
-checks out the tag.
+If you are on a release branch, `status` compares the current version
+to the latest tag.
+If the tag is newer, it shows "upgrade available".
 
-Use `--version TAG` to set a target version. The version is a git tag
-or branch name. For example, `--version v2026-08-07.R0` or
-`--version main`.
+If you are on `main`, `status` shows "Latest: unstable".
+The `main` branch has builds that are not in a release yet.
+
+**Upgrade on a release branch**
+
+`upgrade` without flags fetches the latest tags from origin.
+It finds the newest version tag.
+If the tag is newer than the current version, it checks out the tag.
+This changes the current branch to a detached HEAD.
+
+The `check --fix` command prompts to upgrade after all issues are
+resolved.
+Answer `y` to upgrade or `N` to skip.
+
+**Upgrade on the unstable branch**
+
+`upgrade` without flags on `main` pulls the latest commits from
+`origin/main`.
+It uses a fast-forward merge to stay on the `main` branch.
+If your local `main` is already up to date, it shows
+"Already up to date."
+
+The `check --fix` command does not prompt to upgrade on `main`.
+It shows a note that you can run `roundtable upgrade` if you are
+behind.
+
+**Upgrade list**
+
+`upgrade list` fetches the tags from origin.
+It shows each tag and marks the current version.
+
+If you are on `main`, the list also shows instructions for the
+unstable branch.
+
+**Specific versions**
+
+Use `--version TAG` to set a target version.
+The target can be a git tag or one of the special values:
+
+  - `unstable` or `main`. Switch to the unstable development branch
+  - A release tag, for example `v2026-08-07.R0`
+
+If the target exists, `upgrade` checks it out as a detached HEAD.
+
+**Local changes**
 
 If the working tree has local changes, `upgrade` stashes them before
-the checkout. It shows a warning about the stash.
-
-The `check` command shows the current version in its output. It also
-shows the latest version if one is available. During `check --fix`,
-the tool prompts to upgrade after all other issues are resolved. The
-prompt is optional. Answer `y` to upgrade or `N` to skip.
+the checkout or the merge.
+It shows a warning about the stash.
 
 ### Host check command
 
