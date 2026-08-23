@@ -2715,20 +2715,26 @@ cmd_check() {
 
       # After all fixes are applied, prompt for roundtable upgrade (optional)
       if [[ "${#errors[@]}" -eq 0 ]]; then
-        local current_version
-        current_version=$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo "unknown")
-        local latest_tag
-        latest_tag=$(git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "")
-        if [[ -n "$latest_tag" ]] && ! echo "$current_version" | grep -q "^${latest_tag}"; then
+        if [[ "$ROUNDTABLE_BRANCH" == "main" ]]; then
           echo ""
-          read -p "  Upgrade roundtable to latest version (${latest_tag})? [y/N] " response
-          if [[ "$response" =~ ^[Yy]$ ]]; then
+          echo "  You are on the unstable (main) branch."
+          echo "  Run 'roundtable upgrade' to fast-forward if behind."
+        else
+          local current_version
+          current_version=$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo "unknown")
+          local latest_tag
+          latest_tag=$(git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "")
+          if [[ -n "$latest_tag" ]] && ! echo "$current_version" | grep -q "^${latest_tag}"; then
             echo ""
-            cmd_roundtable_upgrade --version "$latest_tag"
-            echo ""
-            echo "  == Re-running checks after upgrade..."
-            echo ""
-            cmd_check
+            read -p "  Upgrade roundtable to latest version (${latest_tag})? [y/N] " response
+            if [[ "$response" =~ ^[Yy]$ ]]; then
+              echo ""
+              cmd_roundtable_upgrade --version "$latest_tag"
+              echo ""
+              echo "  == Re-running checks after upgrade..."
+              echo ""
+              cmd_check
+            fi
           fi
         fi
       fi
@@ -2908,8 +2914,8 @@ cmd_roundtable_upgrade() {
     if [[ "$ROUNDTABLE_BRANCH" == "main" ]]; then
       echo ""
       echo "  You are on the unstable (main) branch."
-      echo "  Use: roundtable upgrade --version main"
-      echo "  Or:  roundtable upgrade --version <tag>"
+      echo "  Run 'roundtable upgrade' to fast-forward to the latest commit."
+      echo "  Use 'roundtable upgrade --version <tag>' to pin to a release."
     fi
     return 0
   fi
@@ -2931,13 +2937,13 @@ cmd_roundtable_upgrade() {
         echo "Error: unknown flag $1" >&2; exit 1
         ;;
       *)
-        echo "Usage: roundtable upgrade [--version TAG]" >&2
+        echo "Usage: roundtable upgrade [--version TAG|unstable|main]" >&2
         exit 1
         ;;
     esac
   done
 
-  # Fetch latest tags from remote
+  # Fetch latest updates from remote
   echo "  Fetching updates..." >&2
   git -C "$ROOT" fetch --tags origin 2>/dev/null || {
     echo "Error: Cannot reach remote. Check network." >&2
@@ -2947,8 +2953,14 @@ cmd_roundtable_upgrade() {
   # Resolve target
   local target=""
   if [[ -z "$version" ]]; then
-    target=$(roundtable_get_latest_tag)
-    [[ -n "$target" ]] || { echo "Error: No version tags found on remote." >&2; exit 1; }
+    # Branch-aware default
+    if [[ "$ROUNDTABLE_BRANCH" == "main" ]]; then
+      git -C "$ROOT" fetch origin main 2>/dev/null || true
+      target="origin/main"
+    else
+      target=$(roundtable_get_latest_tag)
+      [[ -n "$target" ]] || { echo "Error: No version tags found on remote." >&2; exit 1; }
+    fi
   else
     # Alias: unstable/main → origin/main
     if [[ "$version" == "unstable" ]] || [[ "$version" == "main" ]]; then
@@ -2973,7 +2985,7 @@ cmd_roundtable_upgrade() {
   target_ref=$(git -C "$ROOT" rev-parse "$target" 2>/dev/null || echo "")
 
   if [[ -n "$target_ref" ]] && [[ "$current_ref" == "$target_ref" ]]; then
-    echo "Already at ${target}." >&2
+    echo "Already up to date." >&2
     return 0
   fi
 
@@ -2984,14 +2996,25 @@ cmd_roundtable_upgrade() {
     echo "  ⚠ Local changes stashed. Run 'git stash pop' after upgrade if needed." >&2
   fi
 
-  # Checkout
-  echo "  Upgrading to ${target}..." >&2
-  if git -C "$ROOT" checkout "$target" 2>&1; then
-    echo "Upgraded to ${target}." >&2
-    echo "  Version: $(git -C "$ROOT" describe --tags --always 2>/dev/null)" >&2
+  # Perform upgrade
+  if [[ "$target" == "origin/main" ]]; then
+    echo "  Pushing forward on unstable branch..." >&2
+    if git -C "$ROOT" merge --ff-only "$target" 2>&1; then
+      echo "Upgraded to latest unstable." >&2
+      echo "  Version: $(git -C "$ROOT" describe --tags --always 2>/dev/null)" >&2
+    else
+      echo "Error: Fast-forward merge failed. Try 'roundtable upgrade --version <tag>' to pin to a release." >&2
+      exit 1
+    fi
   else
-    echo "Error: Failed to checkout ${target}." >&2
-    exit 1
+    echo "  Upgrading to ${target}..." >&2
+    if git -C "$ROOT" checkout "$target" 2>&1; then
+      echo "Upgraded to ${target}." >&2
+      echo "  Version: $(git -C "$ROOT" describe --tags --always 2>/dev/null)" >&2
+    else
+      echo "Error: Failed to checkout ${target}." >&2
+      exit 1
+    fi
   fi
 }
 
