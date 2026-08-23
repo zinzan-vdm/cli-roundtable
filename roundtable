@@ -1391,13 +1391,20 @@ upgrade_one_agent() {
         echo "$hermes_output"
         lxc exec "$lxc_name" -- bash -c '
           set -e
-          # Hermes uses an editable install (``pip install -e .``).
-          # The Python module knows its own project root.
-          repo_dir="$(python3 -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" \
-         || repo_dir="$(python -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" || {
+          # The ``hermes`` command is a bash launcher that hardcodes
+          # the venv Python path.  Extract the second quoted path
+          # from the ``exec`` line to find the checkout root.
+          #   exec "/a/venv/bin/python" "/b/hermes-agent/hermes" "$@"
+          launcher="$(command -v hermes)"
+          exec_line="$(grep "^exec " "$launcher" 2>/dev/null | head -1)"
+          # exec "/venv/bin/python" "/checkout/hermes" "$@"
+          # Remove everything before the second "path"
+          entrypoint_path="$(echo "$exec_line" | sed 's/^[^"]*"[^"]*"[[:space:]]*"//;s/".*//')"
+          repo_dir="$(dirname "$entrypoint_path" 2>/dev/null)"
+          if [ -z "$repo_dir" ] || [ ! -d "$repo_dir/.git" ]; then
             echo "Cannot find Hermes git repository." >&2
             exit 1
-          }
+          fi
           cd "$repo_dir"
           target="$1"
 
@@ -1449,11 +1456,16 @@ upgrade_one_agent() {
     # and needs ``origin/main`` to fast-forward against.
     lxc exec "$lxc_name" -- bash -c '
           set -e
-          repo_dir="$(python3 -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" \
-         || repo_dir="$(python -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" || {
+          launcher="$(command -v hermes)"
+          exec_line="$(grep "^exec " "$launcher" 2>/dev/null | head -1)"
+          # exec "/venv/bin/python" "/checkout/hermes" "$@"
+          # Remove everything before the second quoted path
+          entrypoint_path="$(echo "$exec_line" | sed 's/^[^"]*"[^"]*"[[:space:]]*"//;s/".*//')"
+          repo_dir="$(dirname "$entrypoint_path" 2>/dev/null)"
+          if [ -z "$repo_dir" ] || [ ! -d "$repo_dir/.git" ]; then
             echo "Cannot find Hermes git repository." >&2
             exit 1
-          }
+          fi
           cd "$repo_dir"
           git fetch origin "refs/heads/*:refs/remotes/origin/*" 2>&1
         '
