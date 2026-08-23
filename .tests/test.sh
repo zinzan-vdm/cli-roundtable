@@ -798,6 +798,29 @@ echo "$out" | grep -qi "unknown flag" && pass "18.4 Upgrade bad flag" || fail "1
 out=$(./roundtable check 2>&1)
 echo "$out" | grep -qi "Roundtable" && pass "18.5 Check shows roundtable version" || fail "18.5: $(echo "$out" | head -2)"
 
+# ── Phase 19: Agent list format ──
+echo ""
+echo "── Phase 19: Agent list format ──"
+
+# Runs without error
+out=$(./roundtable agent list 2>&1 || true)
+echo "$out" | grep -qiE "(AGENT|No agents)" && pass "19.1 agent list runs" || fail "19.1: $(echo "$out" | head -1)"
+
+# Shows header columns
+echo "$out" | grep -q "AGENT" && pass "19.2 Header shows AGENT" || fail "19.2: no AGENT header"
+echo "$out" | grep -q "STATE" && pass "19.3 Header shows STATE" || fail "19.3: no STATE header"
+echo "$out" | grep -q "VERSION" && pass "19.4 Header shows VERSION" || fail "19.4: no VERSION header"
+echo "$out" | grep -q "LATEST" && pass "19.5 Header shows LATEST" || fail "19.5: no LATEST header"
+echo "$out" | grep -q "CPU" && pass "19.6 Header shows CPU" || fail "19.6: no CPU header"
+echo "$out" | grep -q "MEM" && pass "19.7 Header shows MEM" || fail "19.7: no MEM header"
+
+# No separator lines (standardized minimalistic style)
+! echo "$out" | grep -q "^  ---" && pass "19.8 No separator lines" || fail "19.8: has separator lines"
+
+# Empty state
+out=$(./roundtable agent list 2>&1 || true)
+echo "$out" | grep -qi "No agents" && pass "19.9 No agents message" || fail "19.9: no empty state message"
+
 # ── Summary ──
 echo ""
 echo "  ╔═══════════════════════════════════════════╗"

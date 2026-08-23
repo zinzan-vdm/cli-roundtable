@@ -161,7 +161,7 @@ The default peer type is `foreign`.
 
 | Command | Purpose |
 |---------|---------|
-| `agent list` | List all agent containers |
+| `agent list` | List all agent containers (version, CPU, MEM) |
 | `agent create <name> [--cpu N] [--memory SIZE]` | Create an agent container |
 | `agent start <name>` | Start an agent container |
 | `agent stop <name>` | Stop an agent container |
@@ -187,10 +187,17 @@ The default peer type is `foreign`.
 The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
 
 The `agent upgrade` command updates Hermes in an agent container.
-Without `--version`, it runs `hermes update --yes`.
-With `--version`, it tries `hermes update --branch` first.
-Branches get the full update pipeline from Hermes.
-Version tags use a git checkout fallback instead.
+Without `--version`, it switches to the latest release and updates.
+With `--version`, it switches to a specific tag, branch, or `main`.
+The command uses direct git operations inside the container.
+This avoids problems with `hermes update` on different installs.
+Use `--all` to update every agent container.
+
+The `agent list` command shows the state, the Hermes version, and the
+latest available version.
+It also shows the CPU and memory limits for each agent.
+The `LATEST` column shows `✓` when the agent is up to date.
+It shows the newer tag when an upgrade is available.
 
 The `snapshot` commands work with LXD container snapshots.
 A snapshot captures the full filesystem and container state.
