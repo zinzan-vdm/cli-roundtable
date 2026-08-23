@@ -1391,14 +1391,13 @@ upgrade_one_agent() {
         echo "$hermes_output"
         lxc exec "$lxc_name" -- bash -c '
           set -e
-          repo_dir="$(dirname "$(readlink -f "$(command -v hermes)")")"
-          while [ "$repo_dir" != "/" ] && [ ! -d "$repo_dir/.git" ]; do
-            repo_dir="$(dirname "$repo_dir")"
-          done
-          if [ ! -d "$repo_dir/.git" ]; then
+          # Hermes uses an editable install (``pip install -e .``).
+          # The Python module knows its own project root.
+          repo_dir="$(python3 -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" \
+         || repo_dir="$(python -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" || {
             echo "Cannot find Hermes git repository." >&2
             exit 1
-          fi
+          }
           cd "$repo_dir"
           target="$1"
 
@@ -1449,18 +1448,15 @@ upgrade_one_agent() {
     # ``hermes update --yes`` defaults to ``main`` as the target branch
     # and needs ``origin/main`` to fast-forward against.
     lxc exec "$lxc_name" -- bash -c '
-      set -e
-      repo_dir="$(dirname "$(readlink -f "$(command -v hermes)")")"
-      while [ "$repo_dir" != "/" ] && [ ! -d "$repo_dir/.git" ]; do
-        repo_dir="$(dirname "$repo_dir")"
-      done
-      if [ ! -d "$repo_dir/.git" ]; then
-        echo "Cannot find Hermes git repository." >&2
-        exit 1
-      fi
-      cd "$repo_dir"
-      git fetch origin "refs/heads/*:refs/remotes/origin/*" 2>&1
-    '
+          set -e
+          repo_dir="$(python3 -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" \
+         || repo_dir="$(python -c "from pathlib import Path; import hermes_cli; print(Path(hermes_cli.__file__).parent.parent.resolve())" 2>/dev/null)" || {
+            echo "Cannot find Hermes git repository." >&2
+            exit 1
+          }
+          cd "$repo_dir"
+          git fetch origin "refs/heads/*:refs/remotes/origin/*" 2>&1
+        '
 
     if lxc exec "$lxc_name" -- hermes update --check &>/dev/null; then
       echo "  Already up to date." >&2
