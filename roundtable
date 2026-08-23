@@ -1008,7 +1008,7 @@ cmd_wg_peer_list() {
   load_config
   wg_ensure_interface
 
-  printf "  %-20s %-18s %-10s %s\n" "NAME" "IP/SUBNET" "TYPE" "STATUS"
+  printf "  %-25s %-18s %-10s %s\n" "NAME" "IP/SUBNET" "TYPE" "STATUS"
 
   local active_peers
   active_peers=$(wg show "$WG_INTERFACE" peers 2>/dev/null || echo "")
@@ -1035,7 +1035,7 @@ cmd_wg_peer_list() {
         status="inactive"
       fi
 
-      printf "  %-20s %-18s %-10s %s\n" "$record_name" "$display_ip" "$record_type" "$status"
+      printf "  %-25s %-18s %-10s %s\n" "$record_name" "$display_ip" "$record_type" "$status"
     done
   fi
 }
@@ -1199,7 +1199,7 @@ cmd_agent_list() {
   echo ""
 
   # Header
-  printf "  %-20s %-10s %-16s %-16s %s\n" \
+  printf "  %-20s %-10s %-30s %-20s %s\n" \
     "AGENT" "STATE" "VERSION" "LATEST" "MEM"
 
   local row name status ip mem version tag upgrade_str
@@ -1238,7 +1238,7 @@ cmd_agent_list() {
       upgrade_str="-"
     fi
 
-    printf "  %-20s %-10s %-16s %-17s %s\n" \
+    printf "  %-20s %-10s %-30s %-20s %s\n" \
       "$name" "$status" "$version" "$upgrade_str" "$mem"
   done
 }
@@ -2027,7 +2027,7 @@ cmd_proxy_list() {
     return 0
   fi
 
-  printf "  %-20s %-20s %-15s %s\n" "AGENT" "HOST:PORT" "→ AGENT:PORT" "STATUS"
+  printf "  %-20s %-20s %-25s %s\n" "AGENT" "HOST:PORT" "→ AGENT:PORT" "STATUS"
 
   for record in "$PROXIES_DIR"/*.yml; do
     local agent cport hport bind_ip
@@ -2048,7 +2048,7 @@ cmd_proxy_list() {
       status="[⚠] device missing"
     fi
 
-    printf "  %-20s %-20s %-15s %s\n" "${agent}" "${bind_ip}:${hport}" "${agent}:${cport}" "${status}"
+    printf "  %-20s %-20s %-25s %s\n" "${agent}" "${bind_ip}:${hport}" "${agent}:${cport}" "${status}"
   done
 }
 
