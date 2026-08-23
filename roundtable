@@ -1345,13 +1345,19 @@ cmd_agent_delete() {
 }
 
 # ── Agent upgrade ──────────────────────────────────────────────────
-# Upgrade Hermes inside one or all agent containers.  Without
-# ``--version``, delegates to the built-in ``hermes update`` (latest
-# release).  With ``--version <TAG|BRANCH>``, tries ``hermes update
-# --branch`` first (branches get the full pipeline: pre-update
-# snapshot, stash/pull/syntax-guard, restore).  If hermes fails with
-# ``branch does not exist``, the target is a tag — falls back to
-# direct ``git fetch --tags && git checkout <tag>``.
+# Upgrade Hermes inside one or all agent containers.
+#
+# Without ``--version``, delegates to ``hermes update --yes``.
+# Before delegating, fetches remote tracking branches explicitly.
+# The golden image uses ``git clone --depth 1 --branch <tag>``,
+# which creates no ``refs/remotes/origin/*`` refs.  ``hermes update``
+# defaults to ``main`` and needs ``origin/main`` to fast-forward.
+#
+# With ``--version <TAG|BRANCH>``, tries ``hermes update --branch``
+# first.  Branches get the full pipeline (pre-update snapshot,
+# stash/pull/syntax-guard, restore).  If hermes fails with ``branch
+# does not exist``, the target is a tag — falls back to
+# ``git fetch --tags && git checkout <tag>``.
 #
 # Examples:
 #   roundtable agent upgrade arthur
@@ -1429,11 +1435,34 @@ upgrade_one_agent() {
       echo "$hermes_output"
     fi
   else
+    # Ensure remote tracking branches exist before delegating to hermes.
+    # The golden image is built from ``git clone --depth 1 --branch <tag>``,
+    # which creates only a local tag ref — no ``refs/remotes/origin/*``.
+    # ``hermes update --yes`` defaults to ``main`` as the target branch
+    # and needs ``origin/main`` to fast-forward against.
+    lxc exec "$lxc_name" -- bash -c '
+      cd /opt/hermes
+      git fetch origin "refs/heads/*:refs/remotes/origin/*" 2>&1
+    '
+
     if lxc exec "$lxc_name" -- hermes update --check &>/dev/null; then
       echo "  Already up to date." >&2
       return 0
     fi
-    lxc exec "$lxc_name" -- hermes update --yes
+
+    local hermes_output
+    hermes_output=$(lxc exec "$lxc_name" -- hermes update --yes 2>&1) || {
+      local ec=$?
+      if echo "$hermes_output" | grep -q "does not exist locally or on origin"; then
+        echo "$hermes_output"
+        echo "  ✗ Cannot find the main branch. Try --version to pin a specific tag." >&2
+      else
+        echo "$hermes_output" >&2
+        echo "  ✗ Update failed (exit $ec)." >&2
+      fi
+      return 1
+    }
+    echo "$hermes_output"
   fi
 
   echo "  ✓ Upgraded." >&2
