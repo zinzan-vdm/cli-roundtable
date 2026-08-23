@@ -1188,7 +1188,7 @@ cmd_agent_list() {
   local -a rows=()
   while IFS=',' read -r name status cpu ip mem; do
     rows+=("$name|$status|$cpu|$ip|$mem")
-  done < <(lxc list -c n,s,c,4,m -f csv "roundtable-" 2>/dev/null || true)
+  done < <(lxc list -c n,s,config:limits.cpu,4,m -f csv "roundtable-" 2>/dev/null || true)
 
   if [[ ${#rows[@]} -eq 0 ]]; then
     echo "  No agents." >&2
