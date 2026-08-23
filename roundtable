@@ -1184,10 +1184,14 @@ cmd_agent_list() {
   latest_tag=$(curl -sSf "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | head -1 | cut -d'"' -f4) || latest_tag=""
 
-  # List containers as CSV
-  local containers
-  containers=$(lxc list -c n,s,4,m -f csv "roundtable-" 2>/dev/null) || true
-  if [[ -z "$containers" ]]; then
+  # Read containers into an array (not a while-read loop — lxc exec
+  # inside a loop consumes stdin and steals remaining rows).
+  local -a rows=()
+  while IFS=',' read -r name status ip mem; do
+    rows+=("$name|$status|$ip|$mem")
+  done < <(lxc list -c n,s,4,m -f csv "roundtable-" 2>/dev/null || true)
+
+  if [[ ${#rows[@]} -eq 0 ]]; then
     echo "  No agents." >&2
     [[ -n "$latest_tag" ]] && echo "  Latest Hermes: ${latest_tag}" >&2
     return 0
@@ -1201,10 +1205,11 @@ cmd_agent_list() {
   printf "  %-20s %-10s %-16s %-16s %s\n" \
     "--------------------" "----------" "----------------" "----------------" "--------"
 
-  local name status ip mem version tag upgrade_str
-  while IFS=',' read -r name status ip mem; do
+  local row name status ip mem version tag upgrade_str
+  for row in "${rows[@]}"; do
+    IFS='|' read -r name status ip mem <<< "$row"
     name="${name#roundtable-}"
-    status="${status,,}"  # lowercase
+    status="${status,,}"
 
     # Get Hermes version from inside the container
     if [[ "$status" == "running" ]]; then
@@ -1238,7 +1243,7 @@ cmd_agent_list() {
 
     printf "  %-20s %-10s %-16s %-17s %s\n" \
       "$name" "$status" "$version" "$upgrade_str" "$mem"
-  done <<< "$containers"
+  done
 }
 
 cmd_agent() {
