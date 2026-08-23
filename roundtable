@@ -22,7 +22,7 @@ usage() {
   echo "Agents:"
   printf "  %-42s %s\n" "golden-image build <version>" "Build golden image"
   printf "  %-42s %s\n" "golden-image rebuild <version>" "Rebuild golden image"
-  printf "  %-42s %s\n" "agent list" "List agents"
+  printf "  %-42s %s\n" "agent list" "List agents with Hermes version and upgrade status"
   printf "  %-42s %s\n" "agent create <name> [--cpu N] [--memory SIZE]" "Create agent"
   printf "  %-42s %s\n" "agent start|stop|restart|shell <name>" "Agent lifecycle"
   printf "  %-42s %s\n" "agent logs <name>" "Follow agent journal"
@@ -1175,10 +1175,76 @@ cmd_golden_image() {
 
 agent_lxc_name() { echo "roundtable-${1}"; }
 
+cmd_agent_list() {
+  load_config
+
+  # Fetch latest stable release from GitHub
+  echo "==> Fetching latest Hermes release..." >&2
+  local latest_tag
+  latest_tag=$(curl -sSf "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | head -1 | cut -d'"' -f4) || latest_tag=""
+
+  # List containers as CSV
+  local containers
+  containers=$(lxc list -c n,s,4,m -f csv "roundtable-" 2>/dev/null) || true
+  if [[ -z "$containers" ]]; then
+    echo "  No agents." >&2
+    [[ -n "$latest_tag" ]] && echo "  Latest Hermes: ${latest_tag}" >&2
+    return 0
+  fi
+
+  echo ""
+
+  # Header
+  printf "  %-20s %-10s %-16s %-16s %s\n" \
+    "AGENT" "STATE" "VERSION" "LATEST" "MEM"
+  printf "  %-20s %-10s %-16s %-16s %s\n" \
+    "--------------------" "----------" "----------------" "----------------" "--------"
+
+  local name status ip mem version tag upgrade_str
+  while IFS=',' read -r name status ip mem; do
+    name="${name#roundtable-}"
+    status="${status,,}"  # lowercase
+
+    # Get Hermes version from inside the container
+    if [[ "$status" == "running" ]]; then
+      version=$(lxc exec "roundtable-${name}" -- bash -c '
+        for d in /opt/hermes /usr/local/lib/hermes-agent "$HOME/hermes-agent"; do
+          if [ -d "$d/.git" ]; then
+            git -C "$d" describe --tags --always 2>/dev/null && exit 0
+          fi
+        done
+        echo "?"
+      ' 2>/dev/null) || version="?"
+      # Strip -dirty suffix for comparison
+      tag="${version%%-dirty*}"
+    else
+      version="-"
+      tag=""
+    fi
+
+    # Show upgrade status
+    if [[ -n "$latest_tag" && -n "$tag" && "$tag" != "?" ]]; then
+      if [[ "$tag" == "$latest_tag" ]]; then
+        upgrade_str="✓"
+      else
+        upgrade_str="$latest_tag"
+      fi
+    elif [[ -n "$latest_tag" ]]; then
+      upgrade_str="$latest_tag"
+    else
+      upgrade_str="-"
+    fi
+
+    printf "  %-20s %-10s %-16s %-17s %s\n" \
+      "$name" "$status" "$version" "$upgrade_str" "$mem"
+  done <<< "$containers"
+}
+
 cmd_agent() {
   local sub="${1:-}"; shift 2>/dev/null || true
   case "$sub" in
-    list)    lxc list -c n,s,4,m "roundtable-" 2>/dev/null || lxc list -c n,s,4,m ;;
+    list)    cmd_agent_list ;;
     create)  cmd_agent_create "$@" ;;
     start|stop|restart)
       local name="${1:?Usage: roundtable agent $sub <name>}"
