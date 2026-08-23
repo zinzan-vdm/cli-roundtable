@@ -1365,7 +1365,7 @@ cmd_agent_delete() {
 #   roundtable agent upgrade --version v2026.8.19 arthur
 
 upgrade_one_agent() {
-  local name="$1" version="$2" lxc_name
+  local name="$1" version="$2" lxc_name repo_root
   lxc_name=$(agent_lxc_name "$name")
 
   if ! lxc info "$lxc_name" &>/dev/null; then
@@ -1374,120 +1374,41 @@ upgrade_one_agent() {
   fi
 
   echo "==> Upgrading Hermes in '${name}'..." >&2
+  [[ -n "$version" ]] && echo "  Target version: ${version}" >&2
+
+  # Find the hermes git repo inside the container.  install.sh puts it under
+  # /usr/local/lib/hermes-agent (root/FHS).  The roundtable dev env puts it
+  # under /opt/hermes.  Old installs may use ~/hermes-agent.
+  repo_root=$(lxc exec "$lxc_name" -- bash -c '
+    for d in /opt/hermes /usr/local/lib/hermes-agent "$HOME/hermes-agent"; do
+      if git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "$d"
+        exit 0
+      fi
+    done
+    exit 1
+  ') || { echo "  Cannot find Hermes git repository in container." >&2; return 1; }
 
   if [[ -n "$version" ]]; then
-    echo "  Target version: ${version}" >&2
-
-    # Try Hermes's native update first.  For branches, this gives the
-    # full pipeline: pre-update snapshot, stash/pull/syntax-guard,
-    # restore.  For tags, ``hermes update --branch`` will fail because
-    # it treats the argument as a git branch name; we detect that error
-    # and fall back to direct git tag checkout.
-    local hermes_output
-    hermes_output=$(lxc exec "$lxc_name" -- hermes update --yes --branch "$version" 2>&1) || {
-      local ec=$?
-      if echo "$hermes_output" | grep -q "does not exist locally or on origin"; then
-        # Version is a tag, not a branch.  Fall back to direct git checkout.
-        echo "$hermes_output"
-        lxc exec "$lxc_name" -- bash -c '
-          set -e
-          # The ``hermes`` command is a bash launcher that hardcodes
-          # the venv Python path.  Extract the second quoted path
-          # from the ``exec`` line to find the checkout root.
-          #   exec "/a/venv/bin/python" "/b/hermes-agent/hermes" "$@"
-          launcher="$(command -v hermes)"
-          exec_line="$(grep "^exec " "$launcher" 2>/dev/null | head -1)"
-          # exec "/venv/bin/python" "/checkout/hermes" "$@"
-          # Remove everything before the second "path"
-          entrypoint_path="$(echo "$exec_line" | sed 's/^[^"]*"[^"]*"[[:space:]]*"//;s/".*//')"
-          repo_dir="$(dirname "$entrypoint_path" 2>/dev/null)"
-          if [ -z "$repo_dir" ] || [ ! -d "$repo_dir/.git" ]; then
-            echo "Cannot find Hermes git repository." >&2
-            exit 1
-          fi
-          cd "$repo_dir"
-          target="$1"
-
-          echo "→ Fetching updates..."
-          git fetch --tags origin 2>&1
-
-          # Stash local changes if any
-          stashed=false
-          if ! git diff --quiet --ignore-submodules; then
-            echo "→ Local changes detected — stashing before update..."
-            git stash push --include-untracked -m "hermes-update-autostash-$(date -u +%Y%m%d-%H%M%S)" 2>&1
-            stashed=true
-          fi
-
-          if git rev-parse --verify "refs/tags/${target}" &>/dev/null; then
-            echo "  → Switching to tag: ${target}"
-            git checkout "${target}" 2>&1
-          elif git rev-parse --verify "${target}" &>/dev/null; then
-            echo "  → Switching to ref: ${target}"
-            git checkout "${target}" 2>&1
-          else
-            echo "✗ Version '\''${target}'\'' not found as a tag or ref." >&2
-            exit 1
-          fi
-
-          if [[ "$stashed" == "true" ]]; then
-            echo "→ Restoring local changes..."
-            git stash pop 2>&1 || true
-            echo "⚠ Local changes were restored on top of the updated codebase."
-            echo "  Review git diff / git status if Hermes behaves unexpectedly."
-          fi
-        ' bash "$version"
-      else
-        # Real error (network, auth, etc.) — show full output and bail
-        echo "$hermes_output" >&2
-        echo "  ✗ Update failed (exit $ec)." >&2
-        return 1
-      fi
-    }
-    if [[ -n "$hermes_output" ]] && ! echo "$hermes_output" | grep -q "does not exist locally"; then
-      # Hermes succeeded — print its output
-      echo "$hermes_output"
-    fi
+    # Version update: fetch the tag and check it out.  Tags are immutable
+    # so no pull / fast-forward needed after checkout.
+    lxc exec "$lxc_name" -- bash -c "
+      cd \"$repo_root\" || exit 1
+      git fetch --tags origin
+      git checkout \"$version\"
+    "
   else
-    # Ensure remote tracking branches exist before delegating to hermes.
-    # The golden image is built from ``git clone --depth 1 --branch <tag>``,
-    # which creates only a local tag ref — no ``refs/remotes/origin/*``.
-    # ``hermes update --yes`` defaults to ``main`` as the target branch
-    # and needs ``origin/main`` to fast-forward against.
-    lxc exec "$lxc_name" -- bash -c '
-          set -e
-          launcher="$(command -v hermes)"
-          exec_line="$(grep "^exec " "$launcher" 2>/dev/null | head -1)"
-          # exec "/venv/bin/python" "/checkout/hermes" "$@"
-          # Remove everything before the second quoted path
-          entrypoint_path="$(echo "$exec_line" | sed 's/^[^"]*"[^"]*"[[:space:]]*"//;s/".*//')"
-          repo_dir="$(dirname "$entrypoint_path" 2>/dev/null)"
-          if [ -z "$repo_dir" ] || [ ! -d "$repo_dir/.git" ]; then
-            echo "Cannot find Hermes git repository." >&2
-            exit 1
-          fi
-          cd "$repo_dir"
-          git fetch origin "refs/heads/*:refs/remotes/origin/*" 2>&1
-        '
-
-    if lxc exec "$lxc_name" -- hermes update --check &>/dev/null; then
-      echo "  Already up to date." >&2
-      return 0
-    fi
-
-    local hermes_output
-    hermes_output=$(lxc exec "$lxc_name" -- hermes update --yes 2>&1) || {
-      local ec=$?
-      if echo "$hermes_output" | grep -q "does not exist locally or on origin"; then
-        echo "$hermes_output"
-        echo "  ✗ Cannot find the main branch. Try --version to pin a specific tag." >&2
-      else
-        echo "$hermes_output" >&2
-        echo "  ✗ Update failed (exit $ec)." >&2
-      fi
-      return 1
-    }
-    echo "$hermes_output"
+    # Latest update: fetch origin/main as a tracking ref, then fast-forward.
+    # Explicit refspec works even when the clone is shallow (golden image)
+    # and no origin/main tracking ref exists yet.
+    lxc exec "$lxc_name" -- bash -c "
+      cd \"$repo_root\" || exit 1
+      git stash --include-untracked 2>/dev/null || true
+      git fetch origin '+refs/heads/main:refs/remotes/origin/main'
+      git checkout -B main origin/main
+      git stash pop 2>/dev/null || true
+      git pull --ff-only origin main
+    "
   fi
 
   echo "  ✓ Upgraded." >&2
