@@ -1332,10 +1332,11 @@ cmd_agent_delete() {
 # ── Agent upgrade ──────────────────────────────────────────────────
 # Upgrade Hermes inside one or all agent containers.  Without
 # ``--version``, delegates to the built-in ``hermes update`` (latest
-# release).  With ``--version <TAG|BRANCH>``, uses direct git
-# operations inside the container so that both tags and branches
-# work — ``hermes update --branch`` treats its argument as a git
-# branch name and cannot resolve version tags.
+# release).  With ``--version <TAG|BRANCH>``, tries ``hermes update
+# --branch`` first (branches get the full pipeline: pre-update
+# snapshot, stash/pull/syntax-guard, restore).  If hermes fails with
+# ``branch does not exist``, the target is a tag — falls back to
+# direct ``git fetch --tags && git checkout <tag>``.
 #
 # Examples:
 #   roundtable agent upgrade arthur
@@ -1355,50 +1356,63 @@ upgrade_one_agent() {
 
   if [[ -n "$version" ]]; then
     echo "  Target version: ${version}" >&2
-    # Direct git operations inside the container.  We cannot use
-    # ``hermes update --branch`` because it treats the value as a
-    # git branch name (``refs/heads/``).  Version tags are stored
-    # under ``refs/tags/`` and ``git checkout <tag>`` does the
-    # right thing — this function handles both cases explicitly.
-    lxc exec "$lxc_name" -- bash -c '
-      cd /opt/hermes
-      set -e
-      target="$1"
 
-      echo "→ Fetching updates..."
-      git fetch --tags origin 2>&1
-      git fetch origin 2>&1
+    # Try Hermes's native update first.  For branches, this gives the
+    # full pipeline: pre-update snapshot, stash/pull/syntax-guard,
+    # restore.  For tags, ``hermes update --branch`` will fail because
+    # it treats the argument as a git branch name; we detect that error
+    # and fall back to direct git tag checkout.
+    local hermes_output
+    hermes_output=$(lxc exec "$lxc_name" -- hermes update --yes --branch "$version" 2>&1) || {
+      local ec=$?
+      if echo "$hermes_output" | grep -q "does not exist locally or on origin"; then
+        # Version is a tag, not a branch.  Fall back to direct git checkout.
+        echo "$hermes_output"
+        lxc exec "$lxc_name" -- bash -c '
+          cd /opt/hermes
+          set -e
+          target="$1"
 
-      # Stash local changes if any (including untracked)
-      stashed=false
-      if ! git diff --quiet --ignore-submodules; then
-        echo "→ Local changes detected — stashing before update..."
-        git stash push --include-untracked -m "hermes-update-autostash-$(date -u +%Y%m%d-%H%M%S)" 2>&1
-        stashed=true
-      fi
+          echo "→ Fetching updates..."
+          git fetch --tags origin 2>&1
 
-      # Resolve: tag, remote branch, or explicit ref
-      if git rev-parse --verify "refs/tags/${target}" &>/dev/null; then
-        echo "  → Switching to tag: ${target}"
-        git checkout "${target}" 2>&1
-      elif git rev-parse --verify "origin/${target}" &>/dev/null; then
-        echo "  → Switching to branch: ${target}"
-        git checkout -B "${target}" "origin/${target}" 2>&1
-      elif git rev-parse --verify "${target}" &>/dev/null; then
-        echo "  → Switching to ref: ${target}"
-        git checkout "${target}" 2>&1
+          # Stash local changes if any
+          stashed=false
+          if ! git diff --quiet --ignore-submodules; then
+            echo "→ Local changes detected — stashing before update..."
+            git stash push --include-untracked -m "hermes-update-autostash-$(date -u +%Y%m%d-%H%M%S)" 2>&1
+            stashed=true
+          fi
+
+          if git rev-parse --verify "refs/tags/${target}" &>/dev/null; then
+            echo "  → Switching to tag: ${target}"
+            git checkout "${target}" 2>&1
+          elif git rev-parse --verify "${target}" &>/dev/null; then
+            echo "  → Switching to ref: ${target}"
+            git checkout "${target}" 2>&1
+          else
+            echo "✗ Version '\''${target}'\'' not found as a tag or ref." >&2
+            exit 1
+          fi
+
+          if [[ "$stashed" == "true" ]]; then
+            echo "→ Restoring local changes..."
+            git stash pop 2>&1 || true
+            echo "⚠ Local changes were restored on top of the updated codebase."
+            echo "  Review git diff / git status if Hermes behaves unexpectedly."
+          fi
+        ' bash "$version"
       else
-        echo "✗ Version '${target}' not found as a tag or branch." >&2
-        exit 1
+        # Real error (network, auth, etc.) — show full output and bail
+        echo "$hermes_output" >&2
+        echo "  ✗ Update failed (exit $ec)." >&2
+        return 1
       fi
-
-      if [[ "$stashed" == "true" ]]; then
-        echo "→ Restoring local changes..."
-        git stash pop 2>&1 || true
-        echo "⚠ Local changes were restored on top of the updated codebase."
-        echo "  Review git diff / git status if Hermes behaves unexpectedly."
-      fi
-    ' bash "$version"
+    }
+    if [[ -n "$hermes_output" ]] && ! echo "$hermes_output" | grep -q "does not exist locally"; then
+      # Hermes succeeded — print its output
+      echo "$hermes_output"
+    fi
   else
     if lxc exec "$lxc_name" -- hermes update --check &>/dev/null; then
       echo "  Already up to date." >&2
