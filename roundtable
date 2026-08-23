@@ -1008,8 +1008,7 @@ cmd_wg_peer_list() {
   load_config
   wg_ensure_interface
 
-  printf "%-20s %-18s %-10s %s\n" "NAME" "IP/SUBNET" "TYPE" "STATUS"
-  printf "%-20s %-18s %-10s %s\n" "----" "---------" "----" "------"
+  printf "  %-25s %-18s %-10s %s\n" "NAME" "IP/SUBNET" "TYPE" "STATUS"
 
   local active_peers
   active_peers=$(wg show "$WG_INTERFACE" peers 2>/dev/null || echo "")
@@ -1036,7 +1035,7 @@ cmd_wg_peer_list() {
         status="inactive"
       fi
 
-      printf "%-20s %-18s %-10s %s\n" "$record_name" "$display_ip" "$record_type" "$status"
+      printf "  %-25s %-18s %-10s %s\n" "$record_name" "$display_ip" "$record_type" "$status"
     done
   fi
 }
@@ -1184,10 +1183,14 @@ cmd_agent_list() {
   latest_tag=$(curl -sSf "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | head -1 | cut -d'"' -f4) || latest_tag=""
 
-  # List containers as CSV
-  local containers
-  containers=$(lxc list -c n,s,4,m -f csv "roundtable-" 2>/dev/null) || true
-  if [[ -z "$containers" ]]; then
+  # Read containers into an array (not a while-read loop — lxc exec
+  # inside a loop consumes stdin and steals remaining rows).
+  local -a rows=()
+  while IFS=',' read -r name status cpu ip mem; do
+    rows+=("$name|$status|$cpu|$ip|$mem")
+  done < <(lxc list -c n,s,c,4,m -f csv "roundtable-" 2>/dev/null || true)
+
+  if [[ ${#rows[@]} -eq 0 ]]; then
     echo "  No agents." >&2
     [[ -n "$latest_tag" ]] && echo "  Latest Hermes: ${latest_tag}" >&2
     return 0
@@ -1196,15 +1199,14 @@ cmd_agent_list() {
   echo ""
 
   # Header
-  printf "  %-20s %-10s %-16s %-16s %s\n" \
-    "AGENT" "STATE" "VERSION" "LATEST" "MEM"
-  printf "  %-20s %-10s %-16s %-16s %s\n" \
-    "--------------------" "----------" "----------------" "----------------" "--------"
+  printf "  %-20s %-10s %-30s %-16s %-6s %s\n" \
+    "AGENT" "STATE" "VERSION" "LATEST" "CPU" "MEM"
 
-  local name status ip mem version tag upgrade_str
-  while IFS=',' read -r name status ip mem; do
+  local row name status cpu ip mem version tag upgrade_str
+  for row in "${rows[@]}"; do
+    IFS='|' read -r name status cpu ip mem <<< "$row"
     name="${name#roundtable-}"
-    status="${status,,}"  # lowercase
+    status="${status,,}"
 
     # Get Hermes version from inside the container
     if [[ "$status" == "running" ]]; then
@@ -1236,9 +1238,9 @@ cmd_agent_list() {
       upgrade_str="-"
     fi
 
-    printf "  %-20s %-10s %-16s %-17s %s\n" \
-      "$name" "$status" "$version" "$upgrade_str" "$mem"
-  done <<< "$containers"
+    printf "  %-20s %-10s %-30s %-16s %-6s %s\n" \
+      "$name" "$status" "$version" "$upgrade_str" "$cpu" "$mem"
+  done
 }
 
 cmd_agent() {
@@ -2025,8 +2027,7 @@ cmd_proxy_list() {
     return 0
   fi
 
-  printf "  %-20s %-20s %-15s %s\n" "AGENT" "HOST:PORT" "→ AGENT:PORT" "STATUS"
-  printf "  %-20s %-20s %-15s %s\n" "--------------------" "--------------------" "---------------" "------"
+  printf "  %-20s %-20s %-25s %s\n" "AGENT" "HOST:PORT" "→ AGENT:PORT" "STATUS"
 
   for record in "$PROXIES_DIR"/*.yml; do
     local agent cport hport bind_ip
@@ -2047,7 +2048,7 @@ cmd_proxy_list() {
       status="[⚠] device missing"
     fi
 
-    printf "  %-20s %-20s %-15s %s\n" "${agent}" "${bind_ip}:${hport}" "${agent}:${cport}" "${status}"
+    printf "  %-20s %-20s %-25s %s\n" "${agent}" "${bind_ip}:${hport}" "${agent}:${cport}" "${status}"
   done
 }
 
