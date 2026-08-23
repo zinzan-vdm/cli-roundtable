@@ -1412,6 +1412,12 @@ upgrade_one_agent() {
   fi
 
   echo "  ✓ Upgraded." >&2
+
+  # Restart the gateway service so it picks up the new code.
+  # try-restart only restarts if the unit exists and is running.
+  if lxc exec "$lxc_name" -- systemctl try-restart hermes-gateway &>/dev/null; then
+    echo "  Gateway restarted." >&2
+  fi
 }
 
 cmd_agent_upgrade() {
