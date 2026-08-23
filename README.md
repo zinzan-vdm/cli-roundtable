@@ -266,10 +266,18 @@ limits what the agent can do.
 The server listens on the host WireGuard IP by default. Use `--bind` and
 `--port` to change the address.
 
-`mcp install <name>` generates a bearer token and stores it on the host.
+`mcp install` generates a bearer token and stores it on the host.
 It also writes a permission file with the patterns from `--allow`.
 The token uses the `rtk_` prefix. It has 32 random bytes in hex format.
-The host restricts the token file to owner read and write. Use `chmod 600` to set the same permissions on the client side.
+Use `chmod 600` on the client side to set the same permissions.
+
+`mcp install` does not change the agent configuration.
+To connect the agent, add the printed config to the agent `config.yaml`.
+Then restart the agent gateway.
+
+`mcp uninstall` removes the API key and the permission file.
+It does not change the agent configuration.
+Remove or disable the `mcp_servers` block on the agent side separately.
 
 Permission patterns use token-level glob matching. A pattern like
 `agent create *` matches `agent create foo --cpu 4` if the token count
