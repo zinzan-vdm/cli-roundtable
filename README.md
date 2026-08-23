@@ -263,7 +263,7 @@ shows "upgrade available".
 | Command | Purpose |
 |---------|---------|
 | `status` | Show the current version and repository info |
-| `upgrade [--version TAG]` | Upgrade to the latest version or to a specific tag or branch |
+| `upgrade [--version TAG|unstable|main]` | Upgrade to the latest version, or to a specific tag or branch. Use `main` or `unstable` to switch to the unstable development branch |
 | `upgrade list` | List all available version tags |
 
 `status` reads the version from git. It runs `git describe` to get
