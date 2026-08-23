@@ -49,7 +49,7 @@ usage() {
   printf "  %-42s %s\n" "mcp permissions <name>" "Show agent permissions and API key"
   printf "  %-42s %s\n" "mcp list" "List all authorized agents and server status"
   printf "  %-42s %s\n" "status" "Show roundtable version and repository info"
-  printf "  %-42s %s\n" "upgrade [--version TAG]" "Upgrade roundtable to latest or a specific version"
+  printf "  %-42s %s\n" "upgrade [--version TAG|unstable|main]" "Upgrade roundtable to latest or a specific version"
   printf "  %-42s %s\n" "upgrade list" "List all available versions"
   printf "  %-42s %s\n" "check [--fix]" "Check host readiness (auto-fix with --fix)"
   exit 0
@@ -1961,7 +1961,7 @@ proxy_restore_missing() {
     local device; device=$(proxy_lxc_device_name "$hport")
 
     if ! lxc info "$lxc_name" &>/dev/null; then
-      echo "  [⏭] Proxy ${bind_ip}:${hport} → ${agent}:${cport}: agent container missing" >&2
+      echo "  [–] Proxy ${bind_ip}:${hport} → ${agent}:${cport}: agent container missing" >&2
       continue
     fi
 
@@ -2416,16 +2416,20 @@ cmd_check() {
   # Version info
   local version_str
   version_str=$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo "unknown")
-  local latest
-  latest=$(git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "")
-  if [[ -n "$latest" ]]; then
-    if echo "$version_str" | grep -q "^${latest}"; then
-      printf "  %-35s %s\\n" "Roundtable" "[${version_str}] — up to date"
-    else
-      printf "  %-35s %s\\n" "Roundtable" "[${version_str}] — upgrade to ${latest} available"
-    fi
+  if [[ "$ROUNDTABLE_BRANCH" == "main" ]]; then
+    printf "  %-35s %s\\n" "Roundtable" "[${version_str}] — unstable build"
   else
-    printf "  %-35s %s\\n" "Roundtable" "[${version_str}]"
+    local latest
+    latest=$(git -C "$ROOT" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "")
+    if [[ -n "$latest" ]]; then
+      if echo "$version_str" | grep -q "^${latest}"; then
+        printf "  %-35s %s\\n" "Roundtable" "[${version_str}] — up to date"
+      else
+        printf "  %-35s %s\\n" "Roundtable" "[${version_str}] — upgrade to ${latest} available"
+      fi
+    else
+      printf "  %-35s %s\\n" "Roundtable" "[${version_str}]"
+    fi
   fi
   echo ""
 
@@ -2435,7 +2439,7 @@ cmd_check() {
     if [ "$status" = "ok" ]; then
       echo -e "[✅] ${detail}"
     elif [ "$status" = "skip" ]; then
-      echo -e "[⏭] ${detail}"
+      echo -e "[–] ${detail}"
     elif [ "$status" = "warn" ]; then
       echo -e "[⚠] ${detail}"
     else
@@ -2854,18 +2858,22 @@ roundtable_get_latest_tag() {
 cmd_roundtable_status() {
   local remote
   remote=$(roundtable_get_remote_url)
-  local latest
-  latest=$(roundtable_get_latest_tag)
 
   echo "roundtable ${ROUNDTABLE_VERSION}"
   echo "  Branch:    ${ROUNDTABLE_BRANCH}"
   echo "  Remote:    ${remote}"
 
-  if [[ -n "$latest" ]]; then
-    if echo "$ROUNDTABLE_VERSION" | grep -q "^${latest}"; then
-      echo "  Latest:    ${latest} (up to date)"
-    else
-      echo "  Latest:    ${latest} (upgrade available)"
+  if [[ "$ROUNDTABLE_BRANCH" == "main" ]]; then
+    echo "  Latest:    unstable"
+  else
+    local latest
+    latest=$(roundtable_get_latest_tag)
+    if [[ -n "$latest" ]]; then
+      if echo "${ROUNDTABLE_VERSION}" | grep -q "^${latest}"; then
+        echo "  Latest:    ${latest} (up to date)"
+      else
+        echo "  Latest:    ${latest} (upgrade available)"
+      fi
     fi
   fi
 }
@@ -2896,6 +2904,12 @@ cmd_roundtable_upgrade() {
           echo "  ${tag}"
         fi
       done <<< "$tags"
+    fi
+    if [[ "$ROUNDTABLE_BRANCH" == "main" ]]; then
+      echo ""
+      echo "  You are on the unstable (main) branch."
+      echo "  Use: roundtable upgrade --version main"
+      echo "  Or:  roundtable upgrade --version <tag>"
     fi
     return 0
   fi
@@ -2936,8 +2950,11 @@ cmd_roundtable_upgrade() {
     target=$(roundtable_get_latest_tag)
     [[ -n "$target" ]] || { echo "Error: No version tags found on remote." >&2; exit 1; }
   else
+    # Alias: unstable/main → origin/main
+    if [[ "$version" == "unstable" ]] || [[ "$version" == "main" ]]; then
+      target="origin/main"
     # Check if it is a tag
-    if git -C "$ROOT" tag -l "$version" 2>/dev/null | grep -qxF "$version"; then
+    elif git -C "$ROOT" tag -l "$version" 2>/dev/null | grep -qxF "$version"; then
       target="$version"
     elif git -C "$ROOT" branch -r 2>/dev/null | grep -q "origin/${version}$"; then
       target="origin/${version}"
