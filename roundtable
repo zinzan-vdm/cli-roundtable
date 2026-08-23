@@ -1390,8 +1390,16 @@ upgrade_one_agent() {
         # Version is a tag, not a branch.  Fall back to direct git checkout.
         echo "$hermes_output"
         lxc exec "$lxc_name" -- bash -c '
-          cd /opt/hermes
           set -e
+          repo_dir="$(dirname "$(readlink -f "$(command -v hermes)")")"
+          while [ "$repo_dir" != "/" ] && [ ! -d "$repo_dir/.git" ]; do
+            repo_dir="$(dirname "$repo_dir")"
+          done
+          if [ ! -d "$repo_dir/.git" ]; then
+            echo "Cannot find Hermes git repository." >&2
+            exit 1
+          fi
+          cd "$repo_dir"
           target="$1"
 
           echo "→ Fetching updates..."
@@ -1441,7 +1449,16 @@ upgrade_one_agent() {
     # ``hermes update --yes`` defaults to ``main`` as the target branch
     # and needs ``origin/main`` to fast-forward against.
     lxc exec "$lxc_name" -- bash -c '
-      cd /opt/hermes
+      set -e
+      repo_dir="$(dirname "$(readlink -f "$(command -v hermes)")")"
+      while [ "$repo_dir" != "/" ] && [ ! -d "$repo_dir/.git" ]; do
+        repo_dir="$(dirname "$repo_dir")"
+      done
+      if [ ! -d "$repo_dir/.git" ]; then
+        echo "Cannot find Hermes git repository." >&2
+        exit 1
+      fi
+      cd "$repo_dir"
       git fetch origin "refs/heads/*:refs/remotes/origin/*" 2>&1
     '
 
