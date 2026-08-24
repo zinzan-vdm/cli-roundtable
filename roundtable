@@ -242,7 +242,7 @@ wg_get_own_pubkey() {
 wg_config_add_peer() {
   local name="$1" type="$2" pubkey="$3" allowed_ips="$4" endpoint="$5" keepalive="${6:-25}"
   local conf="/etc/wireguard/${WG_INTERFACE}.conf"
-  cat >> "$conf" <<PEERSECTION
+  sudo tee -a "$conf" > /dev/null <<PEERSECTION
 
 # peer:${name}:${type}
 [Peer]
@@ -257,7 +257,7 @@ PEERSECTION
 wg_config_remove_peer() {
   local name="$1" type="$2"
   local conf="/etc/wireguard/${WG_INTERFACE}.conf"
-  sed -i "/^# peer:${name}:${type}$/,+5d" "$conf" 2>/dev/null || true
+  sudo sed -i "/^# peer:${name}:${type}$/,+5d" "$conf" 2>/dev/null || true
 }
 
 # ── SSH access helpers ────────────────────────────────────────────
