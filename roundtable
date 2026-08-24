@@ -228,10 +228,10 @@ wg_remove_peer() {
 }
 
 wg_get_own_pubkey() {
-  if [[ -f /etc/wireguard/publickey ]]; then
-    cat /etc/wireguard/publickey
-  elif [[ -f "/etc/wireguard/${WG_INTERFACE}.conf" ]]; then
-    grep -oP 'PrivateKey = \K.*' "/etc/wireguard/${WG_INTERFACE}.conf" | wg pubkey 2>/dev/null || true
+  if sudo test -f /etc/wireguard/publickey 2>/dev/null; then
+    sudo cat /etc/wireguard/publickey
+  elif sudo test -f "/etc/wireguard/${WG_INTERFACE}.conf" 2>/dev/null; then
+    sudo grep -oP 'PrivateKey = \K.*' "/etc/wireguard/${WG_INTERFACE}.conf" | wg pubkey 2>/dev/null || true
   else
     echo ""
   fi
