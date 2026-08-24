@@ -2290,7 +2290,7 @@ cmd_mcp_install() {
   echo "    roundtable-cluster:" >&2
   echo "      url: http://<host-mesh-ip>:8342" >&2
   echo "      headers:" >&2
-  echo "        Authorization: Bearer ***" >&2
+  echo "        Authorization: Bearer ${api_key}" >&2
 }
 
 cmd_mcp_uninstall() {
