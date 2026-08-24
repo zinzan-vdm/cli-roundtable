@@ -1231,6 +1231,10 @@ cmd_agent_list() {
       # Extract the base tag (strip -<count>-g<sha> suffix)
       if [[ "$tag" =~ .*-[0-9]+-g[0-9a-f]+$ ]]; then
         base_tag="${tag%-[0-9]*-g*}"
+        # Display clean: strip -0-g<sha> for agents exactly on tag
+        if [[ "$tag" =~ .*-0-g[0-9a-f]+$ ]]; then
+          version="$base_tag"
+        fi
       else
         base_tag="$tag"
       fi
