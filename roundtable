@@ -4,21 +4,6 @@ set -euo pipefail
 usage() {
   echo "Usage: roundtable <command> [args...]"
   echo ""
-  echo "WireGuard networking:"
-  printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
-  printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
-  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign: optional SSH."
-  printf "  %-42s %s\n" "wg peer list" "List all peers (agents + foreign + hosts)"
-  printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
-  printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
-  printf "  %-42s %s\n" "wg peer ssh new [--type foreign] <name>" "Generate SSH key for foreign peer"
-  printf "  %-42s %s\n" "wg peer ssh rm [--type foreign] <name>" "Remove SSH key for foreign peer"
-  printf "  %-42s %s\n" "wg peer ssh config [--type foreign] <name>" "Print SSH connection info"
-  printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
-  printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
-  printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
-  printf "  %-42s %s\n" "wg restore" "Sync config + routes from saved records (post-upgrade)"
-  echo ""
   echo "Agents:"
   printf "  %-42s %s\n" "golden-image build <version>" "Build golden image"
   printf "  %-42s %s\n" "golden-image rebuild <version>" "Rebuild golden image"
@@ -35,12 +20,27 @@ usage() {
   printf "  %-42s %s\n" "agent delete <name>" "Destroy agent + remove peer"
   printf "  %-42s %s\n" "agent resize <name> [--cpu N] [--memory SIZE]" "Resize agent CPU/memory limits"
   echo ""
+  echo "WireGuard networking:"
+  printf "  %-42s %s\n" "wg init [--force]" "Initialize host WireGuard mesh"
+  printf "  %-42s %s\n" "wg up|down" "Bring host wg0 up/down"
+  printf "  %-42s %s\n" "wg peer new [--type agent|foreign] <name>" "Create WireGuard peer + print config. Foreign: optional SSH."
+  printf "  %-42s %s\n" "wg peer list" "List all peers (agents + foreign + hosts)"
+  printf "  %-42s %s\n" "wg peer config [--type agent|foreign|host] <name>" "Print peer WireGuard config (default: foreign)"
+  printf "  %-42s %s\n" "wg peer rm [--type agent|foreign|host] <name>" "Remove WireGuard peer (default: foreign)"
+  printf "  %-42s %s\n" "wg peer ssh new [--type foreign] <name>" "Generate SSH key for foreign peer"
+  printf "  %-42s %s\n" "wg peer ssh rm [--type foreign] <name>" "Remove SSH key for foreign peer"
+  printf "  %-42s %s\n" "wg peer ssh config [--type foreign] <name>" "Print SSH connection info"
+  printf "  %-42s %s\n" "wg invite" "Generate anonymous cluster invitation"
+  printf "  %-42s %s\n" "wg join <name> <invite-file>" "Connect to a remote mesh"
+  printf "  %-42s %s\n" "wg leave <name>" "Disconnect from a remote mesh"
+  printf "  %-42s %s\n" "wg restore" "Sync config + routes from saved records (post-upgrade)"
+  echo ""
   echo "Proxy (port forwarding):"
   printf "  %-42s %s\n" "proxy enable [--public] <port>[:<cport>] <agent>" "Forward host:<port> to agent:<cport> (default: same port)"
   printf "  %-42s %s\n" "proxy disable <port>[:<cport>] <agent>" "Remove a proxy forwarding rule"
   printf "  %-42s %s\n" "proxy list" "List all proxy forwardings and their status"
   echo ""
-  echo "Host:"
+  echo "MCP:"
   printf "  %-42s %s\n" "mcp start|stop|restart|status [--bind IP] [--port PORT]" "Manage the MCP server daemon"
   printf "  %-42s %s\n" "mcp install <name> [--allow \"p1,p2\"]" "Grant agent MCP access + create API key"
   printf "  %-42s %s\n" "mcp uninstall <name>" "Revoke all MCP access for an agent"
@@ -48,6 +48,8 @@ usage() {
   printf "  %-42s %s\n" "mcp revoke <name> \"p1,p2\"|--all" "Remove permission patterns"
   printf "  %-42s %s\n" "mcp permissions <name>" "Show agent permissions and API key"
   printf "  %-42s %s\n" "mcp list" "List all authorized agents and server status"
+  echo ""
+  echo "Host:"
   printf "  %-42s %s\n" "status" "Show roundtable version and repository info"
   printf "  %-42s %s\n" "upgrade [--version TAG|unstable|main]" "Upgrade roundtable to latest or a specific version"
   printf "  %-42s %s\n" "upgrade list" "List all available versions"
@@ -1201,14 +1203,17 @@ cmd_agent_list() {
   echo ""
 
   # Header
-  printf "  %-20s %-10s %-30s %-16s %-6s %s\n" \
-    "AGENT" "STATE" "VERSION" "LATEST" "CPU" "MEM"
+  printf "  %-20s %-10s %-18s %-30s %-16s %-6s %s\n" \
+    "AGENT" "STATE" "MESH IP" "VERSION" "LATEST" "CPU" "MEM"
 
-  local row name status cpu ip mem version tag upgrade_str
+  local row name status cpu ip mem version tag upgrade_str mesh_ip
   for row in "${rows[@]}"; do
     IFS='|' read -r name status cpu ip mem <<< "$row"
     name="${name#roundtable-}"
     status="${status,,}"
+
+    # Read mesh IP from peer record
+    mesh_ip=$(yq '.ip' "${PEERS_DIR}/${name}.agent.yml" 2>/dev/null) || mesh_ip="-"
 
     # Get Hermes version from inside the container
     if [[ "$status" == "running" ]]; then
@@ -1240,8 +1245,8 @@ cmd_agent_list() {
       upgrade_str="-"
     fi
 
-    printf "  %-20s %-10s %-30s %-16s %-6s %s\n" \
-      "$name" "$status" "$version" "$upgrade_str" "$cpu" "$mem"
+    printf "  %-20s %-10s %-18s %-30s %-16s %-6s %s\n" \
+      "$name" "$status" "$mesh_ip" "$version" "$upgrade_str" "$cpu" "$mem"
   done
 }
 

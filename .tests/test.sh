@@ -809,17 +809,18 @@ echo "$out" | grep -qiE "(AGENT|No agents)" && pass "19.1 agent list runs" || fa
 # Shows header columns
 echo "$out" | grep -q "AGENT" && pass "19.2 Header shows AGENT" || fail "19.2: no AGENT header"
 echo "$out" | grep -q "STATE" && pass "19.3 Header shows STATE" || fail "19.3: no STATE header"
-echo "$out" | grep -q "VERSION" && pass "19.4 Header shows VERSION" || fail "19.4: no VERSION header"
-echo "$out" | grep -q "LATEST" && pass "19.5 Header shows LATEST" || fail "19.5: no LATEST header"
-echo "$out" | grep -q "CPU" && pass "19.6 Header shows CPU" || fail "19.6: no CPU header"
-echo "$out" | grep -q "MEM" && pass "19.7 Header shows MEM" || fail "19.7: no MEM header"
+echo "$out" | grep -q "MESH IP" && pass "19.4 Header shows MESH IP" || fail "19.4: no MESH IP header"
+echo "$out" | grep -q "VERSION" && pass "19.5 Header shows VERSION" || fail "19.5: no VERSION header"
+echo "$out" | grep -q "LATEST" && pass "19.6 Header shows LATEST" || fail "19.6: no LATEST header"
+echo "$out" | grep -q "CPU" && pass "19.7 Header shows CPU" || fail "19.7: no CPU header"
+echo "$out" | grep -q "MEM" && pass "19.8 Header shows MEM" || fail "19.8: no MEM header"
 
 # No separator lines (standardized minimalistic style)
-! echo "$out" | grep -q "^  ---" && pass "19.8 No separator lines" || fail "19.8: has separator lines"
+! echo "$out" | grep -q "^  ---" && pass "19.9 No separator lines" || fail "19.9: has separator lines"
 
 # Empty state
 out=$(./roundtable agent list 2>&1 || true)
-echo "$out" | grep -qi "No agents" && pass "19.9 No agents message" || fail "19.9: no empty state message"
+echo "$out" | grep -qi "No agents" && pass "19.10 No agents message" || fail "19.10: no empty state message"
 
 # ── Summary ──
 echo ""

@@ -121,47 +121,11 @@ Run `roundtable` with a command and its arguments.
 roundtable <command> [args]
 ```
 
-### WireGuard commands
-
-| Command | Purpose |
-|---------|---------|
-| `wg init [--force]` | Initialize the host WireGuard mesh |
-| `wg up` | Bring the `wg0` interface up |
-| `wg down` | Bring the `wg0` interface down |
-| `wg peer new [--type agent\|foreign] <name>` | Create a WireGuard peer and print its config |
-| `wg peer list` | List all peers |
-| `wg peer config [--type agent\|foreign\|host] <name>` | Print a peer config |
-| `wg peer rm [--type agent\|foreign\|host] <name>` | Remove a peer |
-| `wg peer ssh new [--type foreign] <name>` | Generate an SSH key for a foreign peer |
-| `wg peer ssh rm [--type foreign] <name>` | Remove an SSH key |
-| `wg peer ssh config [--type foreign] <name>` | Print SSH connection info |
-| `wg invite` | Generate a cluster invitation |
-| `wg join <name> <invite-file>` | Connect to a remote mesh |
-| `wg leave <name>` | Disconnect from a remote mesh |
-| `wg restore` | Restore peers and routes from saved records |
-
-**Note on peer types.** A peer has one of three types.
-
-- `agent` is a LXD container. Its config points to the host.
-- `foreign` is a laptop or admin machine. It can get SSH access.
-- `host` is another cluster host. The tool creates it with `wg join`.
-
-The default peer type is `foreign`.
-
-### Golden image commands
-
-| Command | Purpose |
-|---------|---------|
-| `golden-image build <version>` | Build the golden image |
-| `golden-image rebuild <version>` | Delete the old image and build a new one |
-
-`<version>` is a Hermes Agent release tag, for example `v2026.5.29.2`. The tool publishes the image as the `roundtable-agent` LXD alias.
-
 ### Agent commands
 
 | Command | Purpose |
 |---------|---------|
-| `agent list` | List all agent containers (version, CPU, MEM) |
+| `agent list` | List all agent containers (version, mesh IP, CPU, MEM) |
 | `agent create <name> [--cpu N] [--memory SIZE]` | Create an agent container |
 | `agent start <name>` | Start an agent container |
 | `agent stop <name>` | Stop an agent container |
@@ -184,7 +148,8 @@ The default peer type is `foreign`.
 | `agent delete <name>` | Delete the agent and all its resources |
 | `agent resize <name> [--cpu N] [--memory SIZE]` | Change CPU or memory limits on a running agent |
 
-The container name is `roundtable-<name>`. For example, `agent create arthur` creates the container `roundtable-arthur`.
+The container name is `roundtable-<name>`.
+For example, `agent create arthur` creates the container `roundtable-arthur`.
 
 The `agent upgrade` command updates Hermes in an agent container.
 Without `--version`, it switches to the latest release and updates.
@@ -193,11 +158,13 @@ The command uses direct git operations inside the container.
 This avoids problems with `hermes update` on different installs.
 Use `--all` to update every agent container.
 
-The `agent list` command shows the state, the Hermes version, and the
+The `agent list` command shows the state, the mesh IP, the Hermes version, and the
 latest available version.
 It also shows the CPU and memory limits for each agent.
 The `LATEST` column shows `✓` when the agent is up to date.
 It shows the newer tag when an upgrade is available.
+The `MESH IP` column shows the WireGuard IP of the agent.
+It shows `-` when the agent has no peer record.
 
 The `snapshot` commands work with LXD container snapshots.
 A snapshot captures the full filesystem and container state.
@@ -226,6 +193,43 @@ Set `agents.limits.cpu` and `agents.limits.memory` in the config file.
 These are the default limits for new agents.
 Use `--cpu` and `--memory` on `agent create` to set different limits for a specific agent.
 
+### Golden image commands
+
+| Command | Purpose |
+|---------|---------|
+| `golden-image build <version>` | Build the golden image |
+| `golden-image rebuild <version>` | Delete the old image and build a new one |
+
+`<version>` is a Hermes Agent release tag, for example `v2026.5.29.2`.
+The tool publishes the image as the `roundtable-agent` LXD alias.
+
+### WireGuard commands
+
+| Command | Purpose |
+|---------|---------|
+| `wg init [--force]` | Initialize the host WireGuard mesh |
+| `wg up` | Bring the `wg0` interface up |
+| `wg down` | Bring the `wg0` interface down |
+| `wg peer new [--type agent\|foreign] <name>` | Create a WireGuard peer and print its config |
+| `wg peer list` | List all peers |
+| `wg peer config [--type agent\|foreign\|host] <name>` | Print a peer config |
+| `wg peer rm [--type agent\|foreign\|host] <name>` | Remove a peer |
+| `wg peer ssh new [--type foreign] <name>` | Generate an SSH key for a foreign peer |
+| `wg peer ssh rm [--type foreign] <name>` | Remove an SSH key |
+| `wg peer ssh config [--type foreign] <name>` | Print SSH connection info |
+| `wg invite` | Generate a cluster invitation |
+| `wg join <name> <invite-file>` | Connect to a remote mesh |
+| `wg leave <name>` | Disconnect from a remote mesh |
+| `wg restore` | Restore peers and routes from saved records |
+
+**Note on peer types.** A peer has one of three types.
+
+- `agent` is a LXD container. Its config points to the host.
+- `foreign` is a laptop or admin machine. It can get SSH access.
+- `host` is another cluster host. The tool creates it with `wg join`.
+
+The default peer type is `foreign`.
+
 ### Proxy commands
 
 A proxy forwards a host port to a port inside an agent container.
@@ -241,13 +245,18 @@ The port syntax works in two ways.
 - `proxy enable 8080 arthur` forwards `127.0.0.1:8080` to `arthur:8080`.
 - `proxy enable 9090:3000 arthur` forwards `127.0.0.1:9090` to `arthur:3000`.
 
-The default bind address is `127.0.0.1`. This makes the port reachable only on the host. Add `--public` to bind on all interfaces. With `--public`, the port is reachable from the internet. Use `--public` only when you need it.
+The default bind address is `127.0.0.1`.
+This makes the port reachable only on the host.
+Add `--public` to bind on all interfaces.
+With `--public`, the port is reachable from the internet.
+Use `--public` only when you need it.
 
-### MCP server commands
+### MCP commands
 
-The MCP server lets an agent run roundtable commands. It uses the Model
-Context Protocol over HTTP. An agent connects with a bearer token. The token
-limits what the agent can do.
+The MCP server lets an agent run roundtable commands.
+It uses the Model Context Protocol over HTTP.
+An agent connects with a bearer token.
+The token limits what the agent can do.
 
 | Command | Purpose |
 |---------|---------|
@@ -262,13 +271,15 @@ limits what the agent can do.
 | `mcp permissions <name>` | Show API key and current permissions |
 | `mcp list` | Show all authorized agents and server status |
 
-`mcp start` creates a systemd service. It starts the Python MCP server.
-The server listens on the host WireGuard IP by default. Use `--bind` and
-`--port` to change the address.
+`mcp start` creates a systemd service.
+It starts the Python MCP server.
+The server listens on the host WireGuard IP by default.
+Use `--bind` and `--port` to change the address.
 
 `mcp install` generates a bearer token and stores it on the host.
 It also writes a permission file with the patterns from `--allow`.
-The token uses the `rtk_` prefix. It has 32 random bytes in hex format.
+The token uses the `rtk_` prefix.
+It has 32 random bytes in hex format.
 Use `chmod 600` on the client side to set the same permissions.
 
 `mcp install` does not change the agent configuration.
@@ -279,16 +290,17 @@ Then restart the agent gateway.
 It does not change the agent configuration.
 Remove or disable the `mcp_servers` block on the agent side separately.
 
-Permission patterns use token-level glob matching. A pattern like
-`agent create *` matches `agent create foo --cpu 4` if the token count
-is the same. Use `*` to match any single token. Each tool maps to a
-roundtable command. For example, `roundtable_agent_create` calls
-`agent create <args>`.
+Permission patterns use token-level glob matching.
+A pattern like `agent create *` matches `agent create foo --cpu 4` if the token count
+is the same.
+Use `*` to match any single token.
+Each tool maps to a roundtable command.
+For example, `roundtable_agent_create` calls `agent create <args>`.
 
-`mcp list` shows all agents that have an API key. It also shows
-the status and the connection URL of the MCP server.
+`mcp list` shows all agents that have an API key.
+It also shows the status and the connection URL of the MCP server.
 
-### Roundtable status and upgrade commands
+### Host commands
 
 `status` shows the version of roundtable.
 It also shows the branch name and the remote URL.
@@ -298,6 +310,7 @@ It also shows the branch name and the remote URL.
 | `status` | Show the current version and repository info |
 | `upgrade [--version TAG|unstable|main]` | Upgrade to the latest version or to a specific tag or branch |
 | `upgrade list` | List all available version tags |
+| `check [--fix]` | Check the host readiness |
 
 `status` reads the version from git.
 It runs `git describe` to get the tag and commit count.
@@ -358,13 +371,9 @@ If the working tree has local changes, `upgrade` stashes them before
 the checkout or the merge.
 It shows a warning about the stash.
 
-### Host check command
-
-| Command | Purpose |
-|---------|---------|
-| `check [--fix]` | Check the host readiness |
-
-`check` verifies the tools and the host state. It checks yq, LXD, iptables, swap, disk, Python, WireGuard, IP forwarding, DNS, and the SSH workspace. Add `--fix` to install anything that is missing.
+`check` verifies the tools and the host state.
+It checks yq, LXD, iptables, swap, disk, Python, WireGuard, IP forwarding, DNS, and the SSH workspace.
+Add `--fix` to install anything that is missing.
 
 ## Configuration
 
