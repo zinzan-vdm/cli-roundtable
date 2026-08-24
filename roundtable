@@ -1231,6 +1231,10 @@ cmd_agent_list() {
       # Extract the base tag (strip -<count>-g<sha> suffix)
       if [[ "$tag" =~ .*-[0-9]+-g[0-9a-f]+$ ]]; then
         base_tag="${tag%-[0-9]*-g*}"
+        # Display clean: strip -0-g<sha> for agents exactly on tag
+        if [[ "$tag" =~ .*-0-g[0-9a-f]+$ ]]; then
+          version="$base_tag"
+        fi
       else
         base_tag="$tag"
       fi
@@ -1243,7 +1247,7 @@ cmd_agent_list() {
     # Show upgrade status
     if [[ -n "$latest_tag" && -n "$base_tag" && "$base_tag" != "?" ]]; then
       if [[ "$base_tag" == "$latest_tag" ]]; then
-        upgrade_str="✓"
+        upgrade_str="current"
       else
         upgrade_str="$latest_tag"
       fi
