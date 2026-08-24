@@ -588,7 +588,7 @@ PrivateKey = ${peer_privkey}
 # Route the WireGuard endpoint IP via eth0 to prevent routing loops
 PostUp = ip route add ${host_ip}/32 dev eth0 2>/dev/null || true
 # Keep LXD bridge traffic out of wg0 (CLUSTER_SUBNET covers it)
-PostUp = for s in $(ip -4 addr show eth0 | grep -oP 'inet \K[\d.]+/\d+'); do ip route add \$s dev eth0 metric 99 2>/dev/null; done || true
+PostUp = for s in \$(ip -4 addr show eth0 | grep -oP 'inet \K[\d.]+/\d+'); do ip route add \$s dev eth0 metric 99 2>/dev/null; done || true
 
 [Peer]
 PublicKey = ${host_pubkey}
