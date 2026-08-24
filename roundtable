@@ -1190,9 +1190,9 @@ cmd_agent_list() {
   # Read containers into an array (not a while-read loop — lxc exec
   # inside a loop consumes stdin and steals remaining rows).
   local -a rows=()
-  while IFS=',' read -r name status cpu ip mem; do
-    rows+=("$name|$status|$cpu|$ip|$mem")
-  done < <(lxc list -c n,s,config:limits.cpu,4,m -f csv "roundtable-" 2>/dev/null || true)
+  while IFS=',' read -r name status cpu mem; do
+    rows+=("$name|$status|$cpu|$mem")
+  done < <(lxc list -c n,s,config:limits.cpu,m -f csv "roundtable-" 2>/dev/null || true)
 
   if [[ ${#rows[@]} -eq 0 ]]; then
     echo "  No agents." >&2
@@ -1206,9 +1206,9 @@ cmd_agent_list() {
   printf "  %-20s %-10s %-18s %-30s %-16s %-6s %s\n" \
     "AGENT" "STATE" "MESH IP" "VERSION" "LATEST" "CPU" "MEM"
 
-  local row name status cpu ip mem version tag upgrade_str mesh_ip
+  local row name status cpu mem version tag upgrade_str mesh_ip
   for row in "${rows[@]}"; do
-    IFS='|' read -r name status cpu ip mem <<< "$row"
+    IFS='|' read -r name status cpu mem <<< "$row"
     name="${name#roundtable-}"
     status="${status,,}"
 
@@ -1220,21 +1220,29 @@ cmd_agent_list() {
       version=$(lxc exec "roundtable-${name}" -- bash -c '
         for d in /opt/hermes /usr/local/lib/hermes-agent "$HOME/hermes-agent"; do
           if [ -d "$d/.git" ]; then
-            git -C "$d" describe --tags --always 2>/dev/null && exit 0
+            git -C "$d" describe --tags --always --long 2>/dev/null && exit 0
           fi
         done
         echo "?"
       ' 2>/dev/null) || version="?"
-      # Strip -dirty suffix for comparison
+      # Strip -dirty suffix, then extract base tag for comparison
+      # Format: <tag>-<count>-g<sha> or bare <sha> when no tags
       tag="${version%%-dirty*}"
+      # Extract the base tag (strip -<count>-g<sha> suffix)
+      if [[ "$tag" =~ .*-[0-9]+-g[0-9a-f]+$ ]]; then
+        base_tag="${tag%-[0-9]*-g*}"
+      else
+        base_tag="$tag"
+      fi
     else
       version="-"
       tag=""
+      base_tag=""
     fi
 
     # Show upgrade status
-    if [[ -n "$latest_tag" && -n "$tag" && "$tag" != "?" ]]; then
-      if [[ "$tag" == "$latest_tag" ]]; then
+    if [[ -n "$latest_tag" && -n "$base_tag" && "$base_tag" != "?" ]]; then
+      if [[ "$base_tag" == "$latest_tag" ]]; then
         upgrade_str="✓"
       else
         upgrade_str="$latest_tag"
