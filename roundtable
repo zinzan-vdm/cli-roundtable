@@ -228,10 +228,10 @@ wg_remove_peer() {
 }
 
 wg_get_own_pubkey() {
-  if [[ -f /etc/wireguard/publickey ]]; then
-    cat /etc/wireguard/publickey
-  elif [[ -f "/etc/wireguard/${WG_INTERFACE}.conf" ]]; then
-    grep -oP 'PrivateKey = \K.*' "/etc/wireguard/${WG_INTERFACE}.conf" | wg pubkey 2>/dev/null || true
+  if sudo test -f /etc/wireguard/publickey 2>/dev/null; then
+    sudo cat /etc/wireguard/publickey
+  elif sudo test -f "/etc/wireguard/${WG_INTERFACE}.conf" 2>/dev/null; then
+    sudo grep -oP 'PrivateKey = \K.*' "/etc/wireguard/${WG_INTERFACE}.conf" | wg pubkey 2>/dev/null || true
   else
     echo ""
   fi
@@ -583,10 +583,12 @@ cmd_wg_peer_new() {
 [Interface]
 Address = ${peer_ip}/32
 PrivateKey = ${peer_privkey}
-DNS = 1.1.1.1
+# No DNS — LXD containers use systemd-resolved (stub at 127.0.0.53).
+# wg-quick overwriting resolv.conf breaks DNS.
 # Route the WireGuard endpoint IP via eth0 to prevent routing loops
-# (CLUSTER_SUBNET covers the endpoint IP, which would otherwise be routed back through wg0)
 PostUp = ip route add ${host_ip}/32 dev eth0 2>/dev/null || true
+# Keep LXD bridge traffic out of wg0 (CLUSTER_SUBNET covers it)
+PostUp = for s in $(ip -4 addr show eth0 | grep -oP 'inet \K[\d.]+/\d+'); do ip route add "$s" dev eth0 metric 99 2>/dev/null; done || true
 
 [Peer]
 PublicKey = ${host_pubkey}
