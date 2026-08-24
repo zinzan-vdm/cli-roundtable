@@ -1247,7 +1247,7 @@ cmd_agent_list() {
     # Show upgrade status
     if [[ -n "$latest_tag" && -n "$base_tag" && "$base_tag" != "?" ]]; then
       if [[ "$base_tag" == "$latest_tag" ]]; then
-        upgrade_str="✓"
+        upgrade_str="current"
       else
         upgrade_str="$latest_tag"
       fi
